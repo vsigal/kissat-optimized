@@ -1,12 +1,28 @@
-build
+# Build artifacts
+/build/
 *.o
 *.a
-makefile
-build.h
-kissat
-tissat
-*.gcno
+*.so
 *.gcda
+*.gcno
 *.gcov
 gmon.out
+
+# Binaries
+kissat
+tissat
+kitten
+
+# Profiling
+perf.data
+perf.data.old
+
+# Test/benchmark files
+*.cnf
+!test/cnf/*.cnf
+*_result.txt
+
+# Editor files
 *~
+*.swp
+*.swo

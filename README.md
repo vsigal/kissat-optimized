@@ -11,6 +11,8 @@ Coincidentally "kissat" also means "cats" in Finnish.
 
 Run `./configure && make test` to configure, build and test in `build`.
 
+**Note:** The default build is now optimized for maximum performance with `-O3 -march=native -flto`. This provides ~5% speedup over standard Kissat. See `BUILD_INSTRUCTIONS.md` for details.
+
 Binaries are provided with each major [release](https://github.com/arminbiere/kissat/releases/).
 
 You can get more information about Kissat in the last solver description for the SAT Competition 2024:
