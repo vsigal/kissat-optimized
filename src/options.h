@@ -122,6 +122,7 @@
   OPTION (rephaseinit, 1e3, 10, 1e5, "initial rephase interval") \
   OPTION (rephaseint, 1e3, 10, 1e5, "base rephase interval") \
   OPTION (restart, 1, 0, 1, "enable restarts") \
+  OPTION (restartadaptive, 1, 0, 1, "adaptive restart intervals based on glue/vivification") \
   OPTION (restartint, RESTARTINT_DEFAULT, 1, 1e4, "base restart interval") \
   OPTION (restartmargin, 10, 0, 25, "fast/slow margin in percent") \
   OPTION (restartreusetrail, 1, 0, 1, "restarts tries to reuse trail") \

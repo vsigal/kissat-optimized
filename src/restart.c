@@ -36,17 +36,112 @@ bool kissat_restarting (kissat *solver) {
   return (limit <= fast);
 }
 
+/*
+ * Adaptive restart interval calculation for Tseitin-encoded problems.
+ * 
+ * Strategy:
+ * 1. High glue (LBD) indicates complex subproblems -> longer runs
+ * 2. High vivification success means inprocessing is effective -> longer runs
+ * 3. Low conflict rate relative to decisions -> longer runs
+ */
+static uint64_t adaptive_restart_delta (kissat *solver) {
+  uint64_t base_delta = GET_OPTION (restartint);
+  
+  // If adaptive restarts disabled, use base logic
+  if (!GET_OPTION (restartadaptive)) {
+    uint64_t restarts = solver->statistics.restarts;
+    uint64_t delta = base_delta;
+    if (restarts)
+      delta += kissat_logn (restarts) - 1;
+    return delta;
+  }
+  
+  uint64_t restarts = solver->statistics.restarts;
+  
+  // Base interval with log scaling
+  uint64_t delta = base_delta;
+  if (restarts)
+    delta += kissat_logn (restarts) - 1;
+  
+  // Factor 1: Glue-based adaptation (higher glue = longer runs)
+  const double fast = AVERAGE (fast_glue);
+  const double slow = AVERAGE (slow_glue);
+  double glue_factor = 1.0;
+  
+  if (slow > 0) {
+    // If fast glue is close to slow glue, we're in a stable region
+    double ratio = fast / slow;
+    if (ratio > 0.9 && ratio < 1.1) {
+      // Stable region - can run longer
+      glue_factor = 1.5;
+    } else if (fast > slow * 1.2) {
+      // Fast glue much higher - complex subproblem, extend run
+      glue_factor = 2.0;
+    } else if (fast < slow * 0.8) {
+      // Fast glue much lower - easy region, can restart more often
+      glue_factor = 0.8;
+    }
+  }
+  
+  // Factor 2: Vivification effectiveness
+  // High vivification means inprocessing is working well - let it continue
+  double vivify_factor = 1.0;
+  uint64_t vivified = solver->statistics.vivified;
+  if (vivified > 10000 && CONFLICTS > 100000) {
+    // Check vivification rate (per 1000 conflicts)
+    double vivify_rate = (double) vivified / (CONFLICTS / 1000.0);
+    if (vivify_rate > 5.0) {
+      // High vivification rate - extend runs
+      vivify_factor = 1.4;
+    } else if (vivify_rate > 10.0) {
+      // Very high vivification - significantly extend
+      vivify_factor = 1.8;
+    }
+  }
+  
+  // Factor 3: Decision/conflict ratio
+  // High ratio means we're learning well - can restart less often
+  double decision_factor = 1.0;
+  if (solver->statistics.decisions > 0 && CONFLICTS > 10000) {
+    double dec_per_conflict = (double) solver->statistics.decisions / CONFLICTS;
+    if (dec_per_conflict > 3.0) {
+      // Many decisions per conflict - learning is effective
+      decision_factor = 1.3;
+    } else if (dec_per_conflict < 1.5) {
+      // Few decisions per conflict - might need more restarts
+      decision_factor = 0.9;
+    }
+  }
+  
+  // Combine factors
+  double combined_factor = glue_factor * vivify_factor * decision_factor;
+  
+  // Clamp to reasonable bounds (0.5x to 3x of base)
+  if (combined_factor < 0.5) combined_factor = 0.5;
+  if (combined_factor > 3.0) combined_factor = 3.0;
+  
+  uint64_t adaptive_delta = (uint64_t) (delta * combined_factor);
+  
+  // Ensure minimum of 5 conflicts between restarts
+  if (adaptive_delta < 5) adaptive_delta = 5;
+  
+  kissat_extremely_verbose (solver,
+                            "adaptive restart factors: glue=%.2f vivify=%.2f decision=%.2f "
+                            "combined=%.2f base_delta=%" PRIu64 " adaptive_delta=%" PRIu64,
+                            glue_factor, vivify_factor, decision_factor,
+                            combined_factor, delta, adaptive_delta);
+  
+  return adaptive_delta;
+}
+
 void kissat_update_focused_restart_limit (kissat *solver) {
   assert (!solver->stable);
   limits *limits = &solver->limits;
-  uint64_t restarts = solver->statistics.restarts;
-  uint64_t delta = GET_OPTION (restartint);
-  if (restarts)
-    delta += kissat_logn (restarts) - 1;
+  uint64_t delta = adaptive_restart_delta (solver);
   limits->restart.conflicts = CONFLICTS + delta;
   kissat_extremely_verbose (solver,
                             "focused restart limit at %" PRIu64
-                            " after %" PRIu64 " conflicts ",
+                            " after %" PRIu64 " conflicts (adaptive)",
                             limits->restart.conflicts, delta);
 }
 
