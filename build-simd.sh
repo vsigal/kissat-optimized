@@ -20,6 +20,11 @@ BUILD_DIR="${SCRIPT_DIR}/build"
 # Compiler paths
 AOCC_PATH="/opt/AMD/aocc-compiler"
 AOCC_BIN="${AOCC_PATH}/bin/clang"
+AOCC_SETENV="${AOCC_PATH}/setenv_AOCC.sh"
+
+# Alternative setenv locations
+AOCC_SETENV_ALT1="/home/vsigal/Downloads/setenv_AOCC.sh"
+AOCC_SETENV_ALT2="${HOME}/Downloads/setenv_AOCC.sh"
 
 # Default options
 USE_AOCC=0
@@ -46,6 +51,11 @@ print_help() {
     echo "  $0 --aocc                   # Build with AOCC for AMD"
     echo "  $0 --gcc --clean            # Clean build with GCC"
     echo "  $0 --aocc -j 32             # AOCC build with 32 jobs"
+    echo ""
+    echo "AOCC Notes:"
+    echo "  - Sources setenv_AOCC.sh automatically"
+    echo "  - Uses -march=native for exact CPU optimization"
+    echo "  - Uses -flto=thin for fast Link Time Optimization"
 }
 
 # Parse arguments
@@ -106,12 +116,47 @@ detect_cpu() {
 
 # Check for AOCC
 check_aocc() {
-    if [[ -x "$AOCC_BIN" ]]; then
+    # Find and source AOCC environment
+    local setenv_script=""
+    
+    if [[ -f "$AOCC_SETENV" ]]; then
+        setenv_script="$AOCC_SETENV"
+    elif [[ -f "$AOCC_SETENV_ALT1" ]]; then
+        setenv_script="$AOCC_SETENV_ALT1"
+    elif [[ -f "$AOCC_SETENV_ALT2" ]]; then
+        setenv_script="$AOCC_SETENV_ALT2"
+    fi
+    
+    if [[ -n "$setenv_script" ]]; then
+        echo -e "${BLUE}Sourcing AOCC environment: ${setenv_script}${NC}"
+        source "$setenv_script"
+    else
+        echo -e "${YELLOW}Warning: AOCC setenv script not found${NC}"
+        echo "  Looked for: ${AOCC_SETENV}"
+        echo "              ${AOCC_SETENV_ALT1}"
+        echo "              ${AOCC_SETENV_ALT2}"
+        # Try to set up manually
+        if [[ -d "$AOCC_PATH" ]]; then
+            export PATH="${AOCC_PATH}/bin:${PATH}"
+            export LD_LIBRARY_PATH="${AOCC_PATH}/lib:${LD_LIBRARY_PATH}"
+        fi
+    fi
+    
+    # Set AOCC compiler
+    export CC=clang
+    export CXX=clang++
+    AOCC_BIN="${AOCC_PATH}/bin/clang"
+    
+    if command -v clang &> /dev/null; then
+        local version=$(clang --version 2>/dev/null | head -1)
+        echo -e "${GREEN}Found AOCC (clang): ${version}${NC}"
+        return 0
+    elif [[ -x "$AOCC_BIN" ]]; then
         local version=$($AOCC_BIN --version 2>/dev/null | head -1)
         echo -e "${GREEN}Found AOCC: ${version}${NC}"
         return 0
     else
-        echo -e "${YELLOW}AOCC not found at ${AOCC_BIN}${NC}"
+        echo -e "${YELLOW}AOCC not found${NC}"
         return 1
     fi
 }
@@ -269,63 +314,42 @@ set_gcc_flags_intel() {
 
 # Set compiler flags for AOCC (AMD Genoa 4/5)
 set_aocc_flags_amd() {
+    # AOCC optimized flags as specified
+    # Uses -march=native to optimize for exact CPU (Zen 3/4/5)
+    
+    CFLAGS="-O3"
+    CFLAGS="${CFLAGS} -march=native"      # Optimizes for your exact CPU
+    CFLAGS="${CFLAGS} -flto=thin"          # Fast and effective Link Time Optimization
+    CFLAGS="${CFLAGS} -funroll-loops"      # Loop unrolling
+    
+    # PGO (Profile-Guided Optimization) - for recording profile
+    # Note: For actual PGO, need 2-pass build:
+    #   Pass 1: -fprofile-instr-generate (record profile)
+    #   Pass 2: -fprofile-instr-use (use recorded profile)
+    # CFLAGS="${CFLAGS} -fprofile-instr-generate"
+    
+    # Linker flag for static library compatibility
+    LDFLAGS="-z muldefs"
+    
+    # Detect CPU features for display
     detect_cpu_features
     
-    if [[ $HAS_AVX512F -gt 0 ]]; then
-        # AMD Genoa (Zen 4) / Genoa-X / Bergamo
-        # Supports: AVX-512, GFNI, VPOPCNTDQ, BITALG, VBMI2
-        # Also supports: VAES, VPCLMULQDQ
-        
-        CFLAGS="-march=znver4"
-        CFLAGS="${CFLAGS} -O3"
-        CFLAGS="${CFLAGS} -fomit-frame-pointer"
-        CFLAGS="${CFLAGS} -ffast-math"
-        CFLAGS="${CFLAGS} -funroll-loops"
-        
-        # AMD-specific optimizations
-        CFLAGS="${CFLAGS} -mavx512f -mavx512bw -mavx512vl"
-        [[ $HAS_AVX512VPOPCNT -gt 0 ]] && CFLAGS="${CFLAGS} -mavx512vpopcntdq"
-        [[ $HAS_AVX512BITALG -gt 0 ]] && CFLAGS="${CFLAGS} -mavx512bitalg"
-        [[ $HAS_GFNI -gt 0 ]] && CFLAGS="${CFLAGS} -mgfni"
-        CFLAGS="${CFLAGS} -mavx512vbmi -mavx512vbmi2"
-        CFLAGS="${CFLAGS} -mvaes -mvpclmulqdq"
-        
-        # AOCC-specific optimizations
-        CFLAGS="${CFLAGS} -finline-functions"
-        CFLAGS="${CFLAGS} -fvectorize"
-        CFLAGS="${CFLAGS} -fslp-vectorize"
-        
-        # Link-time optimization
-        CFLAGS="${CFLAGS} -flto"
-        LDFLAGS="-flto -fuse-ld=lld"
-        
-        echo -e "${GREEN}AOCC flags for AMD Genoa 4/5 (AVX-512):${NC}"
-        echo "  Architecture: Zen 4 (znver4)"
-        echo "  SIMD: AVX-512 + GFNI + VPOPCNTDQ + BITALG + VAES"
-    elif [[ $HAS_AVX2 -gt 0 ]]; then
-        # Zen 3 or older
-        CFLAGS="-march=znver3"
-        CFLAGS="${CFLAGS} -O3"
-        CFLAGS="${CFLAGS} -fomit-frame-pointer"
-        [[ $HAS_GFNI -gt 0 ]] && CFLAGS="${CFLAGS} -mgfni"
-        
-        echo -e "${YELLOW}AOCC flags for AMD (AVX2):${NC}"
-        echo "  Architecture: Zen 3"
-        echo "  SIMD: AVX2 (AVX-512 not available)"
     else
-        CFLAGS="-march=x86-64-v2"
-        CFLAGS="${CFLAGS} -O3"
-        
         echo -e "${YELLOW}AOCC flags (Generic):${NC}"
-        echo "  Architecture: x86-64-v2"
-        echo "  SIMD: SSE4.2"
+        echo "  -march=native (generic x86-64)"
+        echo "  SIMD: SSE4.2 (AVX not available)"
     fi
     
-    CC="${AOCC_BIN}"
+    # Additional AOCC-specific optimizations
+    CFLAGS="${CFLAGS} -finline-functions"
+    CFLAGS="${CFLAGS} -fvectorize"
+    CFLAGS="${CFLAGS} -fslp-vectorize"
     
-    # Set environment for AOCC
-    export PATH="${AOCC_PATH}/bin:${PATH}"
-    export LD_LIBRARY_PATH="${AOCC_PATH}/lib:${LD_LIBRARY_PATH}"
+    echo "  -flto=thin (Link Time Optimization)"
+    echo "  -funroll-loops"
+    
+    # CC is already set to clang by check_aocc via setenv script
+    CC="${CC:-clang}"
 }
 
 # Set generic flags as fallback
