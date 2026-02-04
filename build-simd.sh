@@ -264,7 +264,12 @@ set_gcc_flags_intel() {
     
     if [[ $HAS_AVX512F -gt 0 ]]; then
         # Intel Sapphire Rapids / Emerald Rapids (4th/5th gen Xeon)
-        # Supports: AVX-512, GFNI, VPOPCNTDQ, BITALG, VBMI2, VNNI, BF16
+        # Supports FULL AVX-512 including:
+        #   AVX512F, AVX512BW, AVX512VL, AVX512CD, AVX512DQ
+        #   AVX512_VPOPCNTDQ, AVX512_BITALG
+        #   AVX512_VBMI, AVX512_VBMI2
+        #   AVX512_VNNI, AVX512_BF16
+        #   GFNI, VAES, VPCLMULQDQ
         
         CFLAGS="-march=sapphirerapids"
         CFLAGS="${CFLAGS} -O3"
@@ -272,21 +277,27 @@ set_gcc_flags_intel() {
         CFLAGS="${CFLAGS} -ffast-math"
         CFLAGS="${CFLAGS} -funroll-loops"
         
-        # Enable all relevant instruction sets
-        CFLAGS="${CFLAGS} -mavx512f -mavx512bw -mavx512vl"
-        [[ $HAS_AVX512VPOPCNT -gt 0 ]] && CFLAGS="${CFLAGS} -mavx512vpopcntdq"
-        [[ $HAS_AVX512BITALG -gt 0 ]] && CFLAGS="${CFLAGS} -mavx512bitalg"
-        [[ $HAS_GFNI -gt 0 ]] && CFLAGS="${CFLAGS} -mgfni"
+        # Enable ALL AVX-512 instruction sets
+        CFLAGS="${CFLAGS} -mavx512f -mavx512bw -mavx512vl -mavx512cd -mavx512dq"
+        CFLAGS="${CFLAGS} -mavx512vpopcntdq -mavx512bitalg"
         CFLAGS="${CFLAGS} -mavx512vbmi -mavx512vbmi2"
         CFLAGS="${CFLAGS} -mavx512vnni -mavx512bf16"
+        
+        # Additional SIMD
+        CFLAGS="${CFLAGS} -mgfni -mvaes -mvpclmulqdq"
         
         # Link-time optimization
         CFLAGS="${CFLAGS} -flto=auto"
         LDFLAGS="-flto=auto"
         
-        echo -e "${GREEN}GCC flags for Intel (AVX-512):${NC}"
+        echo -e "${GREEN}GCC flags for Intel (ALL AVX-512):${NC}"
         echo "  Architecture: Sapphire Rapids"
-        echo "  SIMD: AVX-512 + GFNI + VPOPCNTDQ + BITALG"
+        echo "  ALL AVX-512 instructions enabled:"
+        echo "    AVX512F, AVX512BW, AVX512VL, AVX512CD, AVX512DQ"
+        echo "    AVX512_VPOPCNTDQ, AVX512_BITALG ✓"
+        echo "    AVX512_VBMI, AVX512_VBMI2"
+        echo "    AVX512_VNNI, AVX512_BF16"
+        echo "    GFNI, VAES, VPCLMULQDQ"
     elif [[ $HAS_AVX2 -gt 0 ]]; then
         # AVX2 only (Haswell and newer)
         CFLAGS="-march=haswell"
@@ -316,17 +327,31 @@ set_gcc_flags_intel() {
 set_aocc_flags_amd() {
     # AOCC optimized flags as specified
     # Uses -march=native to optimize for exact CPU (Zen 3/4/5)
+    # For Zen 4/5 (Genoa), this includes ALL AVX-512 instructions:
+    #   AVX512F, AVX512BW, AVX512VL, AVX512CD, AVX512DQ
+    #   AVX512_VPOPCNTDQ, AVX512_BITALG
+    #   AVX512_VBMI, AVX512_VBMI2
+    #   AVX512_VNNI, AVX512_BF16
+    #   VAES, VPCLMULQDQ, GFNI
     
     CFLAGS="-O3"
-    CFLAGS="${CFLAGS} -march=native"      # Optimizes for your exact CPU
+    
+    # -march=native will auto-detect ALL supported instructions on Genoa 4/5
+    # Including: AVX-512, GFNI, VPOPCNTDQ, BITALG, VBMI, VBMI2, VNNI, BF16
+    CFLAGS="${CFLAGS} -march=native"
+    
+    # Explicitly enable all AVX-512 extensions for Genoa 4/5
+    # This ensures ALL instructions are available even if detection has issues
+    CFLAGS="${CFLAGS} -mavx512f -mavx512bw -mavx512vl -mavx512cd -mavx512dq"
+    CFLAGS="${CFLAGS} -mavx512vpopcntdq -mavx512bitalg"
+    CFLAGS="${CFLAGS} -mavx512vbmi -mavx512vbmi2"
+    CFLAGS="${CFLAGS} -mavx512vnni -mavx512bf16"
+    
+    # Additional SIMD instructions
+    CFLAGS="${CFLAGS} -mgfni -mvaes -mvpclmulqdq"
+    
     CFLAGS="${CFLAGS} -flto=thin"          # Fast and effective Link Time Optimization
     CFLAGS="${CFLAGS} -funroll-loops"      # Loop unrolling
-    
-    # PGO (Profile-Guided Optimization) - for recording profile
-    # Note: For actual PGO, need 2-pass build:
-    #   Pass 1: -fprofile-instr-generate (record profile)
-    #   Pass 2: -fprofile-instr-use (use recorded profile)
-    # CFLAGS="${CFLAGS} -fprofile-instr-generate"
     
     # Linker flag for static library compatibility
     LDFLAGS="-z muldefs"
@@ -334,11 +359,15 @@ set_aocc_flags_amd() {
     # Detect CPU features for display
     detect_cpu_features
     
-    else
-        echo -e "${YELLOW}AOCC flags (Generic):${NC}"
-        echo "  -march=native (generic x86-64)"
-        echo "  SIMD: SSE4.2 (AVX not available)"
-    fi
+    echo ""
+    echo -e "${GREEN}AOCC flags for AMD Genoa 4/5 (ALL AVX-512):${NC}"
+    echo "  -march=native (auto-detects Zen 4/5)"
+    echo "  ALL AVX-512 instructions enabled:"
+    echo "    AVX512F, AVX512BW, AVX512VL, AVX512CD, AVX512DQ"
+    echo "    AVX512_VPOPCNTDQ, AVX512_BITALG ✓"
+    echo "    AVX512_VBMI, AVX512_VBMI2"
+    echo "    AVX512_VNNI, AVX512_BF16"
+    echo "    GFNI, VAES, VPCLMULQDQ"
     
     # Additional AOCC-specific optimizations
     CFLAGS="${CFLAGS} -finline-functions"
