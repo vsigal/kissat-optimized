@@ -8,6 +8,7 @@
 #include "print.h"
 #include "rank.h"
 #include "shrink.h"
+#include "simdscan.h"
 #include "sort.h"
 #include "tiers.h"
 #include "vivify.h"
@@ -468,29 +469,45 @@ static void analyze_failed_literal (kissat *solver, clause *conflict) {
       clause *reason = kissat_dereference_clause (solver, ref);
       // Bump activity for smart vivification
       kissat_bump_clause_vivify_activity (solver, reason);
-      for (all_literals_in_clause (other, reason)) {
-        assert (other != NOT (lit));
-        assert (other != failed);
-        if (other == lit)
-          continue;
-        if (other == unit)
-          continue;
-        if (other == not_failed) {
+      
+      // Use SIMD-accelerated processing for larger clauses
+      if (reason->size >= 16) {
+        unsigned analyzed_count;
+        bool contains_not_failed = kissat_simd_analyze_conflict_literals (
+            solver, reason->lits, reason->size, not_failed, failed, 
+            &analyzed_count);
+        if (contains_not_failed) {
           LOG ("negation %s of failed literal %s occurs in reason",
                LOGLIT (not_failed), LOGLIT (failed));
           goto DONE;
         }
-        assert (values[other] < 0);
-        const unsigned idx = IDX (other);
-        assigned *b = all_assigned + idx;
-        if (!b->level)
-          continue;
-        assert (b->level == 1);
-        if (b->analyzed)
-          continue;
-        LOG ("analyzing reason literal %s", LOGLIT (other));
-        kissat_push_analyzed (solver, all_assigned, idx);
-        unresolved++;
+        unresolved += analyzed_count;
+      } else {
+        // Scalar fallback for small clauses
+        for (all_literals_in_clause (other, reason)) {
+          assert (other != NOT (lit));
+          assert (other != failed);
+          if (other == lit)
+            continue;
+          if (other == unit)
+            continue;
+          if (other == not_failed) {
+            LOG ("negation %s of failed literal %s occurs in reason",
+                 LOGLIT (not_failed), LOGLIT (failed));
+            goto DONE;
+          }
+          assert (values[other] < 0);
+          const unsigned idx = IDX (other);
+          assigned *b = all_assigned + idx;
+          if (!b->level)
+            continue;
+          assert (b->level == 1);
+          if (b->analyzed)
+            continue;
+          LOG ("analyzing reason literal %s", LOGLIT (other));
+          kissat_push_analyzed (solver, all_assigned, idx);
+          unresolved++;
+        }
       }
     }
     assert (unresolved > 0);

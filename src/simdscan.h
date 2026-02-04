@@ -117,4 +117,52 @@ static inline bool scalar_find_non_false (const value *values,
 // Threshold for using SIMD (must be large enough to amortize setup cost)
 #define KISSAT_SIMD_THRESHOLD 8
 
+/*
+ * SIMD-accelerated literal membership test
+ * Check if literal_idx appears in the lits array
+ * Used in clause minimization and subsumption checking
+ * 
+ * @param lit_idx - the literal index to search for
+ * @param lits - array of literal indices
+ * @param size - number of literals in array
+ * @return index if found, size if not found
+ */
+size_t kissat_simd_find_literal_idx (unsigned lit_idx,
+                                      const unsigned *lits,
+                                      size_t size);
+
+/*
+ * SIMD-accelerated batch marking of literals
+ * Mark multiple literals in a clause as analyzed/removable/etc
+ * 
+ * @param marks - the marks array to set
+ * @param lits - array of literals to mark
+ * @param size - number of literals
+ * @param mark_value - value to set (e.g., 1 for analyzed, -1 for poisoned)
+ */
+void kissat_simd_mark_literals (value *marks,
+                                 const unsigned *lits,
+                                 size_t size,
+                                 value mark_value);
+
+/*
+ * SIMD-accelerated conflict clause processing
+ * Count and collect analyzed literals from conflict clause
+ * Combines multiple operations: counting, marking, bounds checking
+ * 
+ * @param solver - the solver
+ * @param lits - clause literals
+ * @param size - clause size
+ * @param not_failed - literal to skip
+ * @param failed - failed literal
+ * @param out_analyzed_count - output: number of new analyzed literals
+ * @return true if conflict contains not_failed (special case)
+ */
+bool kissat_simd_analyze_conflict_literals (kissat *solver,
+                                             const unsigned *lits,
+                                             size_t size,
+                                             unsigned not_failed,
+                                             unsigned failed,
+                                             unsigned *out_analyzed_count);
+
 #endif // _simdscan_h_INCLUDED

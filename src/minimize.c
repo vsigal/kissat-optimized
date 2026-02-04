@@ -1,5 +1,6 @@
 #include "minimize.h"
 #include "inline.h"
+#include "simdscan.h"
 
 static inline int minimized_index (kissat *solver, bool minimizing,
                                    assigned *a, unsigned lit, unsigned idx,
@@ -157,7 +158,7 @@ void kissat_reset_poisoned (kissat *solver) {
  * 
  * If a literal's reason is binary and the other literal in that reason
  * is also in the learned clause, then this literal is redundant.
- * This is a quick O(1) check before the expensive recursive minimization.
+ * Uses SIMD-accelerated membership test for large clauses.
  */
 static bool fast_binary_minimize_check (kissat *solver, assigned *assigned,
                                         unsigned lit, unsigned *lits, 
@@ -173,8 +174,21 @@ static bool fast_binary_minimize_check (kissat *solver, assigned *assigned,
   const unsigned other = a->reason;
   const unsigned other_idx = IDX (other);
   
-  // Check if the other literal of the binary reason is in the clause
-  // This is O(size) but size is usually small (< 50)
+  // For larger clauses, use SIMD-accelerated search
+  // This checks if other_idx appears in the clause's literal indices
+  if (size >= 8 && size <= 256) {
+    // Use stack buffer for small/medium clauses
+    unsigned idx_array[256];
+    for (unsigned i = 0; i < size; i++)
+      idx_array[i] = IDX (lits[i]);
+    
+    size_t pos = kissat_simd_find_literal_idx (other_idx, idx_array, size);
+    
+    if (pos < size)
+      return true;  // Other literal is in clause, so this one is redundant
+  }
+  
+  // Scalar fallback for small clauses or allocation failure
   for (unsigned i = 0; i < size; i++) {
     if (IDX (lits[i]) == other_idx)
       return true;  // Other literal is in clause, so this one is redundant

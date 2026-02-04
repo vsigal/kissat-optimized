@@ -1,5 +1,7 @@
 #include "simdscan.h"
+#include "inline.h"
 #include "internal.h"
+#include "print.h"
 #include "report.h"
 
 #include <immintrin.h>
@@ -363,4 +365,257 @@ bool kissat_simd_all_false (const value *values,
       return false;
   }
   return true;
+}
+
+// ============================================================
+// LITERAL MEMBERSHIP TESTING
+// Find if literal_idx exists in lits array
+// ============================================================
+
+#if KISSAT_HAS_AVX512
+static inline size_t avx512_find_literal_idx (unsigned lit_idx,
+                                               const unsigned *lits,
+                                               size_t size) {
+  
+  // Broadcast the target literal index to all lanes
+  __m512i target = _mm512_set1_epi32 (lit_idx);
+  const size_t simd_width = 16;
+  size_t i = 0;
+  
+  for (; i + simd_width <= size; i += simd_width) {
+    // Load 16 literal indices
+    __m512i candidates = _mm512_loadu_si512 ((__m512i *)(lits + i));
+    
+    // Compare with target - get mask of matches
+    __mmask16 match_mask = _mm512_cmpeq_epi32_mask (candidates, target);
+    
+    if (match_mask != 0) {
+      // Found it - return the index
+      return i + __builtin_ctz (match_mask);
+    }
+  }
+  
+  // Handle remainder
+  for (; i < size; i++) {
+    if (lits[i] == lit_idx)
+      return i;
+  }
+  
+  return size; // Not found
+}
+#endif // KISSAT_HAS_AVX512
+
+#if KISSAT_HAS_AVX2
+static inline size_t avx2_find_literal_idx (unsigned lit_idx,
+                                             const unsigned *lits,
+                                             size_t size) {
+  
+  __m256i target = _mm256_set1_epi32 (lit_idx);
+  const size_t simd_width = 8;
+  size_t i = 0;
+  
+  for (; i + simd_width <= size; i += simd_width) {
+    __m256i candidates = _mm256_loadu_si256 ((__m256i *)(lits + i));
+    __m256i cmp = _mm256_cmpeq_epi32 (candidates, target);
+    int mask = _mm256_movemask_epi8 (cmp);
+    
+    if (mask != 0) {
+      // Each 32-bit compare produces 4 bytes in mask
+      // Find first set bit and divide by 4
+      return i + (__builtin_ctz (mask) / 4);
+    }
+  }
+  
+  // Handle remainder
+  for (; i < size; i++) {
+    if (lits[i] == lit_idx)
+      return i;
+  }
+  
+  return size;
+}
+#endif // KISSAT_HAS_AVX2
+
+size_t kissat_simd_find_literal_idx (unsigned lit_idx,
+                                      const unsigned *lits,
+                                      size_t size) {
+  
+  if (size < 4) {
+    // Scalar for very small arrays
+    for (size_t i = 0; i < size; i++) {
+      if (lits[i] == lit_idx)
+        return i;
+    }
+    return size;
+  }
+  
+#if KISSAT_HAS_AVX512
+  if (cpu_features.avx512f) {
+    return avx512_find_literal_idx (lit_idx, lits, size);
+  }
+#endif
+  
+#if KISSAT_HAS_AVX2
+  if (cpu_features.avx2) {
+    return avx2_find_literal_idx (lit_idx, lits, size);
+  }
+#endif
+  
+  // Scalar fallback
+  for (size_t i = 0; i < size; i++) {
+    if (lits[i] == lit_idx)
+      return i;
+  }
+  return size;
+}
+
+// ============================================================
+// BATCH MARKING OF LITERALS
+// Set marks[lits[i]] = mark_value for multiple literals
+// ============================================================
+
+void kissat_simd_mark_literals (value *marks,
+                                 const unsigned *lits,
+                                 size_t size,
+                                 value mark_value) {
+  
+  // This is essentially a scatter operation
+  // AVX-512 has _mm512_i32scatter_epi32 but it's slow on many CPUs
+  // Better to use simple loop with potential unrolling
+  
+#if KISSAT_HAS_AVX512
+  if (size >= 16 && cpu_features.avx512f) {
+    const size_t simd_width = 16;
+    size_t i = 0;
+    
+    // Process 16 indices at once, but scatter individually
+    // (scatters are slow, so we just use this for prefetching)
+    for (; i + simd_width <= size; i += simd_width) {
+      __m512i indices = _mm512_loadu_si512 ((__m512i *)(lits + i));
+      // Prefetch mark locations
+      _mm512_prefetch_i32scatter_ps (marks, indices, 1, _MM_HINT_T0);
+      
+      // Actually set the marks
+      for (size_t j = 0; j < simd_width; j++) {
+        marks[lits[i + j]] = mark_value;
+      }
+    }
+    
+    // Handle remainder
+    for (; i < size; i++) {
+      marks[lits[i]] = mark_value;
+    }
+    return;
+  }
+#endif
+  
+  // Scalar with simple unrolling for ILP
+  size_t i = 0;
+  for (; i + 4 <= size; i += 4) {
+    marks[lits[i + 0]] = mark_value;
+    marks[lits[i + 1]] = mark_value;
+    marks[lits[i + 2]] = mark_value;
+    marks[lits[i + 3]] = mark_value;
+  }
+  for (; i < size; i++) {
+    marks[lits[i]] = mark_value;
+  }
+}
+
+// ============================================================
+// CONFLICT CLAUSE ANALYSIS
+// Combined operation for conflict analysis
+// ============================================================
+
+bool kissat_simd_analyze_conflict_literals (kissat *solver,
+                                             const unsigned *lits,
+                                             size_t size,
+                                             unsigned not_failed,
+                                             unsigned failed,
+                                             unsigned *out_analyzed_count) {
+  
+  (void) failed; // unused but kept for interface
+  
+  assigned *all_assigned = solver->assigned;
+  value *marks = solver->marks;
+  unsigned count = 0;
+  
+#if KISSAT_HAS_AVX512
+  if (size >= 16 && cpu_features.avx512f && cpu_features.avx512bw) {
+    const size_t simd_width = 16;
+    size_t i = 0;
+    
+    // Broadcast not_failed for comparison
+    __m512i not_failed_vec = _mm512_set1_epi32 (not_failed);
+    
+    for (; i + simd_width <= size; i += simd_width) {
+      __m512i lit_vec = _mm512_loadu_si512 ((__m512i *)(lits + i));
+      
+      // Check if any literal equals not_failed
+      __mmask16 is_not_failed = _mm512_cmpeq_epi32_mask (lit_vec, not_failed_vec);
+      if (is_not_failed != 0) {
+        return true; // Special case - contains negation of failed
+      }
+      
+      // Process each literal
+      // We can't easily parallelize the level/analyzed checks
+      // due to memory dependencies, so do scalar for logic
+      for (size_t j = 0; j < simd_width; j++) {
+        unsigned lit = lits[i + j];
+        const unsigned idx = IDX (lit);
+        assigned *a = all_assigned + idx;
+        
+        if (!a->level)
+          continue;
+        
+        if (!a->analyzed) {
+          kissat_push_analyzed (solver, all_assigned, idx);
+          count++;
+        }
+      }
+    }
+    
+    // Handle remainder
+    for (; i < size; i++) {
+      unsigned lit = lits[i];
+      if (lit == not_failed)
+        return true;
+      
+      const unsigned idx = IDX (lit);
+      assigned *a = all_assigned + idx;
+      
+      if (!a->level)
+        continue;
+      
+      if (!a->analyzed) {
+        kissat_push_analyzed (solver, all_assigned, idx);
+        count++;
+      }
+    }
+    
+    *out_analyzed_count = count;
+    return false;
+  }
+#endif
+  
+  // Scalar fallback
+  for (size_t i = 0; i < size; i++) {
+    unsigned lit = lits[i];
+    if (lit == not_failed)
+      return true;
+    
+    const unsigned idx = IDX (lit);
+    assigned *a = all_assigned + idx;
+    
+    if (!a->level)
+      continue;
+    
+    if (!a->analyzed) {
+      kissat_push_analyzed (solver, all_assigned, idx);
+      count++;
+    }
+  }
+  
+  *out_analyzed_count = count;
+  return false;
 }
