@@ -55,7 +55,8 @@ static unsigned clause_activity_size = 0;
 
 // Initialize activity tracking
 static void init_vivify_activity (kissat *solver) {
-  size_t max_refs = SIZE_STACK (solver->arena) / sizeof (clause);
+  // Arena is STACK(ward), and reference is offset in ward units
+  size_t max_refs = SIZE_STACK (solver->arena);
   if (max_refs > clause_activity_size) {
     clause_activity =
         kissat_realloc (solver, clause_activity,
