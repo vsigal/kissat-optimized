@@ -1,3 +1,5 @@
+#include "simdscan.h"
+
 static inline void kissat_watch_large_delayed (kissat *solver,
                                                watches *all_watches,
                                                unsigneds *delayed) {
@@ -188,34 +190,36 @@ scan_replacement:
       unsigned *const searched = lits + c->searched;
       assert (c->lits + 2 <= searched);
       assert (searched < end_lits);
-      unsigned *r, replacement = INVALID_LIT;
+      unsigned replacement = INVALID_LIT;
       value replacement_value = -1;
-      for (r = searched; r != end_lits; r++) {
-        replacement = *r;
-        assert (VALID_INTERNAL_LITERAL (replacement));
-        replacement_value = values[replacement];
-        if (replacement_value >= 0)
-          break;
+      size_t r_idx;
+      
+      // Use SIMD-accelerated search for large clauses
+      bool found = kissat_simd_find_non_false (values, lits,
+                                                searched - lits,
+                                                end_lits - lits,
+                                                &replacement, &r_idx);
+      
+      if (!found) {
+        // Search from start up to searched position
+        found = kissat_simd_find_non_false (values, lits, 2,
+                                            searched - lits,
+                                            &replacement, &r_idx);
       }
-      if (replacement_value < 0) {
-        for (r = lits + 2; r != searched; r++) {
-          replacement = *r;
-          assert (VALID_INTERNAL_LITERAL (replacement));
-          replacement_value = values[replacement];
-          if (replacement_value >= 0)
-            break;
-        }
+      
+      if (found) {
+        replacement_value = values[replacement];
       }
 
       if (KISSAT_PROPLIT_LIKELY (replacement_value >= 0)) {
-        c->searched = r - lits;
+        c->searched = r_idx;
         assert (replacement != INVALID_LIT);
         LOGREF3 (ref, "unwatching %s in", LOGLIT (not_lit));
         q -= 2;
         lits[0] = other;
         lits[1] = replacement;
         assert (lits[0] != lits[1]);
-        *r = not_lit;
+        lits[r_idx] = not_lit;
         kissat_delay_watching_large (solver, delayed, replacement, other,
                                      ref);
         ticks++;
