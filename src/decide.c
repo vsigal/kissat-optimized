@@ -156,26 +156,78 @@ static unsigned last_enqueued_unassigned_variable (kissat *solver) {
   return res;
 }
 
+// Compute Tseitin-adjusted score: prefer lower Tseitin levels
+// Adds a small bonus to variables with lower Tseitin levels
+// Level 0 (inputs) get ~10% bonus, higher levels get progressively less
+static inline double tseitin_adjusted_score (kissat *solver, heap *scores, unsigned idx) {
+  double base_score = kissat_get_heap_score (scores, idx);
+  if (!GET_OPTION (tseitindec))
+    return base_score;
+  
+  unsigned level = tseitin_level (solver, idx);
+  // Add bonus: level 0 gets 10% boost, level 1 gets 9%, etc.
+  // This is small enough to not override VSIDS but breaks ties
+  double bonus = base_score * (0.1 - level * 0.01);
+  if (bonus < 0) bonus = 0;
+  return base_score + bonus;
+}
+
 static unsigned largest_score_unassigned_variable (kissat *solver) {
   heap *scores = SCORES;
-  unsigned res = kissat_max_heap (scores);
   const value *const values = solver->values;
-  while (values[LIT (res)]) {
+  
+  // Pop assigned variables from heap top
+  while (!kissat_empty_heap (scores)) {
+    unsigned candidate = kissat_max_heap (scores);
+    if (!values[LIT (candidate)])
+      break;
     kissat_pop_max_heap (solver, scores);
-    res = kissat_max_heap (scores);
   }
+  
+  assert (!kissat_empty_heap (scores));
+  unsigned res = kissat_max_heap (scores);
+  
+  // If Tseitin-aware, check if there's a better variable with similar score
+  // but lower Tseitin level
+  if (GET_OPTION (tseitindec) && !kissat_empty_heap (scores)) {
+    double best_adjusted = tseitin_adjusted_score (solver, scores, res);
+    unsigned best = res;
+    
+    // Check a few more candidates in the heap
+    size_t heap_size = kissat_size_heap (scores);
+    size_t to_check = heap_size < 20 ? heap_size : 20;
+    
+    for (size_t i = 1; i < to_check; i++) {
+      unsigned idx = PEEK_STACK (scores->stack, i);
+      if (values[LIT (idx)])
+        continue;
+      
+      double adjusted = tseitin_adjusted_score (solver, scores, idx);
+      if (adjusted > best_adjusted) {
+        best_adjusted = adjusted;
+        best = idx;
+      }
+    }
+    
+    res = best;
+  }
+  
 #if defined(LOGGING) || defined(CHECK_HEAP)
   const double score = kissat_get_heap_score (scores, res);
+  unsigned level = GET_OPTION (tseitindec) ? tseitin_level (solver, res) : 0;
 #endif
-  LOG ("largest score unassigned %s score %g", LOGVAR (res), score);
+  LOG ("largest score unassigned %s score %g tseitin_level %u", 
+       LOGVAR (res), score, level);
 #ifdef CHECK_HEAP
   for (all_variables (idx)) {
     if (!ACTIVE (idx))
       continue;
     if (VALUE (LIT (idx)))
       continue;
-    const double idx_score = kissat_get_heap_score (scores, idx);
-    assert (score >= idx_score);
+    double idx_base = kissat_get_heap_score (scores, idx);
+    double idx_adjusted = tseitin_adjusted_score (solver, scores, idx);
+    assert (tseitin_adjusted_score (solver, scores, res) >= idx_adjusted ||
+            kissat_get_heap_score (scores, res) >= idx_base);
   }
 #endif
   return res;
