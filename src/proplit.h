@@ -80,11 +80,16 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
   const unsigned level = a->level;
   clause *res = 0;
 
-  // Prefetch distance for watch list
-  #define WATCH_PREFETCH_DISTANCE 8
+  // Prefetch distances tuned for L1/L2 cache hierarchy
+  #define WATCH_PREFETCH_DISTANCE 12
+  #define CLAUSE_PREFETCH_DISTANCE 4
+  
+  // Pre-fetch first batch of watches
+  if (begin_watches + WATCH_PREFETCH_DISTANCE < end_watches)
+    KISSAT_PROPLIT_PREFETCH(begin_watches + WATCH_PREFETCH_DISTANCE);
   
   while (p != end_watches) {
-    // Prefetch upcoming watches to hide memory latency
+    // Aggressive prefetching of upcoming watches
     if (p + WATCH_PREFETCH_DISTANCE < end_watches)
       KISSAT_PROPLIT_PREFETCH(p + WATCH_PREFETCH_DISTANCE);
     
@@ -93,10 +98,11 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
     assert (VALID_INTERNAL_LITERAL (blocking));
     const value blocking_value = values[blocking];
 
-    if (head.type.binary) {
+    if (KISSAT_PROPLIT_LIKELY (head.type.binary)) {
+      // Binary clause fast path - most common case
       if (KISSAT_PROPLIT_LIKELY (blocking_value > 0))
         continue;
-      if (blocking_value < 0) {
+      if (KISSAT_PROPLIT_UNLIKELY (blocking_value < 0)) {
         res = kissat_binary_conflict (solver, not_lit, blocking);
 #ifndef CONTINUE_PROPAGATING_AFTER_CONFLICT
         break;
@@ -113,7 +119,11 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
         continue;
       const reference ref = tail.raw;
       assert (ref < SIZE_STACK (solver->arena));
+      
+      // Prefetch clause header before accessing
       clause *const c = (clause *) (arena + ref);
+      KISSAT_PROPLIT_PREFETCH(c);
+      
       ticks++;
       if (KISSAT_PROPLIT_UNLIKELY (c->garbage)) {
         q -= 2;
@@ -138,6 +148,7 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
         const value replacement_value = values[replacement];
 
         // Common ternary case: move watch to the only replacement literal.
+        // Finding a replacement is the expected case.
         if (KISSAT_PROPLIT_LIKELY (replacement_value >= 0)) {
           c->searched = 2;
           assert (replacement != INVALID_LIT);
@@ -156,7 +167,8 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
         assert (replacement_value < 0);
 
         // No replacement: either conflict (other false) or unit (other unassigned).
-        if (other_value) {
+        // Conflicts are relatively rare compared to unit propagation.
+        if (KISSAT_PROPLIT_UNLIKELY (other_value)) {
           assert (blocking_value < 0);
           assert (other_value < 0);
 #if defined(PROBING_PROPAGATION)
@@ -190,6 +202,12 @@ scan_replacement:
       unsigned *const searched = lits + c->searched;
       assert (c->lits + 2 <= searched);
       assert (searched < end_lits);
+      
+      // Prefetch clause literals for scanning
+      KISSAT_PROPLIT_PREFETCH(lits);
+      if (c->size > 8)
+        KISSAT_PROPLIT_PREFETCH(lits + 8);
+      
       unsigned replacement = INVALID_LIT;
       value replacement_value = -1;
       size_t r_idx;
@@ -223,7 +241,7 @@ scan_replacement:
         kissat_delay_watching_large (solver, delayed, replacement, other,
                                      ref);
         ticks++;
-      } else if (other_value) {
+      } else if (KISSAT_PROPLIT_UNLIKELY (other_value)) {
         assert (replacement_value < 0);
         assert (blocking_value < 0);
         assert (other_value < 0);

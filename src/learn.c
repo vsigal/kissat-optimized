@@ -5,6 +5,15 @@
 
 #include <inttypes.h>
 
+// Clause Learning Optimization: Track high-quality clauses for faster subsumption
+// Clauses with low glue are more likely to be useful in the future
+#define HIGH_QUALITY_GLUE_THRESHOLD 3  // Glue <= 3 considered high quality
+#define HIGH_QUALITY_SIZE_THRESHOLD 5  // Size <= 5 considered high quality
+
+static inline bool is_high_quality_clause (unsigned glue, unsigned size) {
+  return glue <= HIGH_QUALITY_GLUE_THRESHOLD || size <= HIGH_QUALITY_SIZE_THRESHOLD;
+}
+
 static unsigned backjump_limit (struct kissat *solver) {
 #ifdef NOPTIONS
   (void) solver;
@@ -192,6 +201,12 @@ void kissat_learn_clause (kissat *solver) {
   const unsigned size = SIZE_STACK (solver->clause);
   const size_t glue = SIZE_STACK (solver->levels);
   assert (glue <= UINT_MAX);
+  
+  // Track high-quality clauses for statistics
+  if (is_high_quality_clause ((unsigned) glue, size)) {
+    INC (clauses_high_quality);
+  }
+  
   if (!solver->probing)
     kissat_update_learned (solver, glue, size);
   assert (size > 0);

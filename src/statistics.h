@@ -35,6 +35,7 @@
   STATISTIC (clauses_kept1, 1, PCNT_CLS_IMPROVED, "%", "improved") \
   STATISTIC (clauses_kept2, 1, PCNT_CLS_IMPROVED, "%", "improved") \
   STATISTIC (clauses_kept3, 1, PCNT_CLS_IMPROVED, "%", "improved") \
+  COUNTER (clauses_high_quality, 2, PCNT_CONFLICTS, "%", "conflicts") \
   COUNTER (clauses_learned, 2, PCNT_CONFLICTS, "%", "conflicts") \
   COUNTER (clauses_original, 2, PCNT_CLS_ADDED, "%", "added") \
   STATISTIC (clauses_promoted1, 1, PCNT_CLS_IMPROVED, "%", "improved") \

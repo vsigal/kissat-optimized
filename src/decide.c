@@ -6,6 +6,15 @@
 
 #include <inttypes.h>
 
+// Branch prediction hints
+#if defined(__GNUC__) || defined(__clang__)
+#define DECIDE_LIKELY(X) __builtin_expect(!!(X), 1)
+#define DECIDE_UNLIKELY(X) __builtin_expect(!!(X), 0)
+#else
+#define DECIDE_LIKELY(X) (X)
+#define DECIDE_UNLIKELY(X) (X)
+#endif
+
 /*
  * Tseitin-Aware Decision Heuristic
  * 
@@ -53,7 +62,8 @@ static unsigned find_tseitin_preferred_variable (kissat *solver) {
   unsigned res = start;
   
   // If already unassigned, we're done (fast path)
-  if (!values[LIT (res)])
+  // Note: This is often true at the start of search, less so later
+  if (DECIDE_LIKELY (!values[LIT (res)]))
     return res;
   
   // Search for best unassigned variable
@@ -160,7 +170,8 @@ static unsigned largest_score_unassigned_variable (kissat *solver) {
   heap *scores = SCORES;
   unsigned res = kissat_max_heap (scores);
   const value *const values = solver->values;
-  while (values[LIT (res)]) {
+  // Most variables in heap are assigned, so this loop typically runs multiple times
+  while (DECIDE_LIKELY (values[LIT (res)])) {
     kissat_pop_max_heap (solver, scores);
     res = kissat_max_heap (scores);
   }
@@ -241,10 +252,10 @@ static unsigned next_random_decision (kissat *solver) {
 
   for (;;) {
     unsigned idx = kissat_next_random32 (&solver->random) % VARS;
-    if (!ACTIVE (idx))
+    if (DECIDE_UNLIKELY (!ACTIVE (idx)))
       continue;
     unsigned lit = LIT (idx);
-    if (solver->values[lit])
+    if (DECIDE_UNLIKELY (solver->values[lit]))
       continue;
     return idx;
   }
