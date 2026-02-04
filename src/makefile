@@ -1,0 +1,1 @@
+/home/vsigal/src/kissat/makefile
