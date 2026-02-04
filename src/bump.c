@@ -66,6 +66,10 @@ static inline void bump_analyzed_variable_score (kissat *solver,
 
 void kissat_bump_variable (kissat *solver, unsigned idx) {
   bump_analyzed_variable_score (solver, idx);
+  
+  // Invalidate decision cache when scores change (Optimization #4)
+  // The cached variables may no longer have the highest scores
+  solver->decision_cache_valid = false;
 }
 
 static void bump_analyzed_variable_scores (kissat *solver) {

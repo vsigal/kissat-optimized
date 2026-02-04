@@ -166,7 +166,99 @@ static unsigned last_enqueued_unassigned_variable (kissat *solver) {
   return res;
 }
 
+// Forward declarations for decision cache
+static void invalidate_decision_cache (kissat *solver);
+static void fill_decision_cache (kissat *solver);
+
+// Check if cached variable is still valid (unassigned and active)
+static inline bool cache_entry_valid (kissat *solver, unsigned idx) {
+  if (idx == INVALID_IDX)
+    return false;
+  if (!ACTIVE (idx))
+    return false;
+  return !solver->values[LIT (idx)];
+}
+
+// Try to get a variable from the decision cache
+static unsigned get_from_decision_cache (kissat *solver) {
+  if (!solver->decision_cache_valid)
+    return INVALID_IDX;
+  
+  // Try to find a valid entry in the cache
+  for (unsigned i = 0; i < solver->decision_cache_size; i++) {
+    unsigned idx = solver->decision_cache[i];
+    if (cache_entry_valid (solver, idx)) {
+      // Move this entry to front (LRU) and return it
+      if (i > 0) {
+        for (unsigned j = i; j > 0; j--)
+          solver->decision_cache[j] = solver->decision_cache[j-1];
+        solver->decision_cache[0] = idx;
+      }
+      solver->decision_cache_hits++;
+      return idx;
+    }
+  }
+  
+  // No valid entries found
+  solver->decision_cache_valid = false;
+  solver->decision_cache_misses++;
+  return INVALID_IDX;
+}
+
+// Fill the decision cache with top candidates from the heap
+static void fill_decision_cache (kissat *solver) {
+  heap *scores = SCORES;
+  const value *const values = solver->values;
+  
+  solver->decision_cache_size = 0;
+  
+  // Get up to DECISION_CACHE_SIZE candidates
+  for (unsigned i = 0; i < DECISION_CACHE_SIZE * 2; i++) {
+    if (kissat_empty_heap (scores))
+      break;
+    
+    unsigned idx = kissat_max_heap (scores);
+    
+    // Skip assigned variables but don't pop them yet
+    if (values[LIT (idx)]) {
+      // Pop assigned variables
+      kissat_pop_max_heap (solver, scores);
+      continue;
+    }
+    
+    // Found an unassigned variable
+    solver->decision_cache[solver->decision_cache_size++] = idx;
+    
+    if (solver->decision_cache_size >= DECISION_CACHE_SIZE)
+      break;
+  }
+  
+  solver->decision_cache_valid = (solver->decision_cache_size > 0);
+}
+
+// Invalidate the decision cache (call when variables are assigned)
+static void invalidate_decision_cache (kissat *solver) {
+  solver->decision_cache_valid = false;
+  solver->decision_cache_size = 0;
+}
+
 static unsigned largest_score_unassigned_variable (kissat *solver) {
+  // Try decision cache first (Optimization #4)
+  unsigned cached = get_from_decision_cache (solver);
+  if (cached != INVALID_IDX) {
+    LOG ("decision cache hit: %s", LOGVAR (cached));
+    return cached;
+  }
+  
+  // Cache miss - fill it and try again
+  fill_decision_cache (solver);
+  cached = get_from_decision_cache (solver);
+  if (cached != INVALID_IDX) {
+    LOG ("decision cache filled, returning: %s", LOGVAR (cached));
+    return cached;
+  }
+  
+  // Fallback to original implementation
   heap *scores = SCORES;
   unsigned res = kissat_max_heap (scores);
   const value *const values = solver->values;

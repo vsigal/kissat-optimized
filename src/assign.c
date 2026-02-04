@@ -27,6 +27,10 @@ void kissat_assign_decision (kissat *solver, unsigned lit) {
   kissat_assign (solver, solver->probing, solver->level, false, lit,
                  DECISION_REASON);
   LOG ("assign %s decision", LOGLIT (lit));
+  
+  // Invalidate decision cache after making a decision (Optimization #4)
+  // The assigned variable may have been in the cache
+  solver->decision_cache_valid = false;
 }
 
 void kissat_assign_binary (kissat *solver, unsigned lit, unsigned other) {

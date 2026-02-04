@@ -241,6 +241,15 @@ struct kissat {
   proof *proof;
 #endif
 
+  // Variable Decision Cache (Optimization #4)
+  // Cache top-N decision candidates to avoid expensive heap traversals
+#define DECISION_CACHE_SIZE 8
+  unsigned decision_cache[DECISION_CACHE_SIZE];  // Cached variable indices
+  unsigned decision_cache_size;                   // Current cache entries
+  unsigned decision_cache_hits;                   // Statistics
+  unsigned decision_cache_misses;                 // Statistics
+  bool decision_cache_valid;                      // Cache validity flag
+
   statistics statistics;
 };
 

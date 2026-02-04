@@ -42,6 +42,15 @@ kissat *kissat_init (void) {
   solver->first_reducible = INVALID_REF;
   solver->last_irredundant = INVALID_REF;
   kissat_reset_last_learned (solver);
+  
+  // Initialize decision cache (Optimization #4)
+  solver->decision_cache_size = 0;
+  solver->decision_cache_hits = 0;
+  solver->decision_cache_misses = 0;
+  solver->decision_cache_valid = false;
+  for (unsigned i = 0; i < DECISION_CACHE_SIZE; i++)
+    solver->decision_cache[i] = INVALID_IDX;
+  
 #ifndef NDEBUG
   kissat_init_checker (solver);
 #endif
