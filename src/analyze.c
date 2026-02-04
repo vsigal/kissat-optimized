@@ -10,6 +10,7 @@
 #include "shrink.h"
 #include "sort.h"
 #include "tiers.h"
+#include "vivify.h"
 
 #include <inttypes.h>
 
@@ -465,6 +466,8 @@ static void analyze_failed_literal (kissat *solver, clause *conflict) {
       const reference ref = a->reason;
       LOGREF (ref, "resolving %s reason", LOGLIT (lit));
       clause *reason = kissat_dereference_clause (solver, ref);
+      // Bump activity for smart vivification
+      kissat_bump_clause_vivify_activity (solver, reason);
       for (all_literals_in_clause (other, reason)) {
         assert (other != NOT (lit));
         assert (other != failed);
@@ -541,6 +544,8 @@ int kissat_analyze (kissat *solver, clause *conflict) {
   int res;
   do {
     LOGCLS (conflict, "analyzing conflict %" PRIu64, CONFLICTS);
+    // Bump activity for smart vivification
+    kissat_bump_clause_vivify_activity (solver, conflict);
     unsigned conflict_level;
     if (one_literal_on_conflict_level (solver, conflict, &conflict_level))
       res = 1;

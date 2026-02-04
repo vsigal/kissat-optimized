@@ -21,6 +21,97 @@
 #include <inttypes.h>
 #include <string.h>
 
+/*
+ * Smart Vivification - Conflict-Guided Clause Selection
+ * 
+ * Traditional vivification tries many clauses but only ~35% succeed.
+ * This wastes effort on clauses that are unlikely to be strengthened.
+ * 
+ * Smart Vivification tracks which clauses participate in conflicts and
+ * prioritizes vivifying those clauses. The intuition is:
+ * - Clauses involved in conflicts are "active" in the search
+ * - Active clauses are more likely to have redundant literals
+ * - Inactive clauses are unlikely to be strengthened
+ * 
+ * Implementation:
+ * 1. Track clause activity (conflict involvement) with decay
+ * 2. Only vivify clauses above an activity threshold
+ * 3. Skip clauses that haven't been active recently
+ */
+
+// Activity increment when clause is involved in conflict
+#define VIVIFY_ACTIVITY_INC 1.0
+
+// Activity decay factor (similar to VSIDS)
+#define VIVIFY_ACTIVITY_DECAY 0.95
+
+// Minimum activity to be considered for vivification
+// Lower threshold = more clauses tried (less aggressive filtering)
+#define VIVIFY_ACTIVITY_THRESHOLD 0.01
+
+// Clause activity tracking
+static double *clause_activity = 0;
+static unsigned clause_activity_size = 0;
+
+// Initialize activity tracking
+static void init_vivify_activity (kissat *solver) {
+  size_t max_refs = SIZE_STACK (solver->arena) / sizeof (clause);
+  if (max_refs > clause_activity_size) {
+    clause_activity =
+        kissat_realloc (solver, clause_activity,
+                        clause_activity_size * sizeof (double),
+                        max_refs * sizeof (double));
+    memset (clause_activity + clause_activity_size, 0,
+            (max_refs - clause_activity_size) * sizeof (double));
+    clause_activity_size = max_refs;
+  }
+}
+
+// Decay all activities
+static void decay_vivify_activity (void) {
+  if (!clause_activity)
+    return;
+  for (unsigned i = 0; i < clause_activity_size; i++)
+    clause_activity[i] *= VIVIFY_ACTIVITY_DECAY;
+}
+
+// Bump clause activity (public for use in analyze.c)
+void kissat_bump_clause_vivify_activity (kissat *solver, clause *c) {
+  if (!c)
+    return;
+  init_vivify_activity (solver);
+  ward *arena = BEGIN_STACK (solver->arena);
+  reference ref = (ward *) c - arena;
+  if (ref < clause_activity_size) {
+    clause_activity[ref] += VIVIFY_ACTIVITY_INC;
+    // Cap at reasonable maximum to avoid overflow
+    if (clause_activity[ref] > 1e6)
+      clause_activity[ref] = 1e6;
+  }
+}
+
+// Get clause activity
+static double get_clause_vivify_activity (kissat *solver, clause *c) {
+  if (!c || !clause_activity)
+    return 0.0;
+  ward *arena = BEGIN_STACK (solver->arena);
+  reference ref = (ward *) c - arena;
+  if (ref < clause_activity_size)
+    return clause_activity[ref];
+  return 0.0;
+}
+
+// Check if clause should be vivified based on activity
+static bool should_vivify_clause (kissat *solver, clause *c) {
+  // Always vivify prioritized clauses
+  if (c->vivify)
+    return true;
+  
+  // Check activity threshold
+  double activity = get_clause_vivify_activity (solver, c);
+  return activity >= VIVIFY_ACTIVITY_THRESHOLD;
+}
+
 static inline bool more_occurrences (unsigned *counts, unsigned a,
                                      unsigned b) {
   const unsigned s = counts[a], t = counts[b];
@@ -231,6 +322,10 @@ static void release_vivifier (vivifier *vivifier) {
 static void schedule_vivification_candidates (vivifier *vivifier) {
   kissat *solver = vivifier->solver;
   LOG ("scheduling vivification candidates");
+  
+  // Decay clause activities for smart vivification
+  decay_vivify_activity ();
+  
   int tier = vivifier->tier;
   unsigned lower_glue_limit, upper_glue_limit;
   unsigned tier1 = vivify_tier1_limit (solver);
@@ -258,6 +353,7 @@ static void schedule_vivification_candidates (vivifier *vivifier) {
   assert (lower_glue_limit <= upper_glue_limit);
   ward *const arena = BEGIN_STACK (solver->arena);
   size_t prioritized = 0;
+  size_t skipped_low_activity = 0;
   unsigned *counts = vivifier->counts;
   references *schedule = &vivifier->schedule;
   for (unsigned prioritize = 0; prioritize < 2; prioritize++) {
@@ -277,6 +373,13 @@ static void schedule_vivification_candidates (vivifier *vivifier) {
         continue;
       if (c->vivify != prioritize)
         continue;
+      
+      // Smart vivification: skip low-activity clauses
+      if (!should_vivify_clause (solver, c)) {
+        skipped_low_activity++;
+        continue;
+      }
+      
       if (simplify_vivification_candidate (solver, c))
         continue;
       if (prioritize)
@@ -287,6 +390,11 @@ static void schedule_vivification_candidates (vivifier *vivifier) {
   }
   CLEAR_STACK (solver->clause);
   size_t scheduled = SIZE_STACK (*schedule);
+  
+  if (skipped_low_activity) {
+    kissat_phase (solver, vivifier->mode, GET (vivifications),
+                  "skipped %zu low-activity clauses", skipped_low_activity);
+  }
   if (prioritized) {
     kissat_phase (solver, vivifier->mode, GET (vivifications),
                   "prioritized %zu clauses %.0f%%", prioritized,
