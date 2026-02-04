@@ -34,9 +34,11 @@ kissat_delay_watching_large (kissat *solver, unsigneds *const delayed,
 #if defined(__GNUC__) || defined(__clang__)
 #define KISSAT_PROPLIT_LIKELY(X) __builtin_expect(!!(X), 1)
 #define KISSAT_PROPLIT_UNLIKELY(X) __builtin_expect(!!(X), 0)
+#define KISSAT_PROPLIT_PREFETCH(addr) __builtin_prefetch((addr), 0, 3)
 #else
 #define KISSAT_PROPLIT_LIKELY(X) (X)
 #define KISSAT_PROPLIT_UNLIKELY(X) (X)
+#define KISSAT_PROPLIT_PREFETCH(addr) ((void)0)
 #endif
 
 static inline clause *PROPAGATE_LITERAL (kissat *solver,
@@ -76,7 +78,14 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
   const unsigned level = a->level;
   clause *res = 0;
 
+  // Prefetch distance for watch list
+  #define WATCH_PREFETCH_DISTANCE 8
+  
   while (p != end_watches) {
+    // Prefetch upcoming watches to hide memory latency
+    if (p + WATCH_PREFETCH_DISTANCE < end_watches)
+      KISSAT_PROPLIT_PREFETCH(p + WATCH_PREFETCH_DISTANCE);
+    
     const watch head = *q++ = *p++;
     const unsigned blocking = head.blocking.lit;
     assert (VALID_INTERNAL_LITERAL (blocking));
