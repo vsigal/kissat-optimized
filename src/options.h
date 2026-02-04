@@ -156,6 +156,7 @@
   OPTION (transitive, 1, 0, 1, "transitive reduction of binary clauses") \
   OPTION (transitiveeffort, 20, 0, 2e3, "effort in per mille") \
   OPTION (transitivekeep, 1, 0, 1, "keep transitivity candidates") \
+  OPTION (tseitindec, 1, 0, 1, "Tseitin-aware decisions (prefer input variables)") \
   OPTION (tumble, 1, 0, 1, "tumbled external indices order") \
   NQTOPT (verbose, 0, 0, 3, "verbosity level") \
   OPTION (vivify, 1, 0, 1, "vivify clauses") \

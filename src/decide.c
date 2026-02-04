@@ -5,22 +5,122 @@
 #include "print.h"
 
 #include <inttypes.h>
+#include <math.h>
+
+/*
+ * Tseitin-Aware Decision Heuristic
+ * 
+ * In Tseitin-encoded circuits, variables are created in layers:
+ * - Level 0: Input variables (original problem inputs)
+ * - Level 1: First-level gate outputs
+ * - Level 2: Second-level gate outputs, etc.
+ * 
+ * Deciding lower-level variables first maximizes propagation
+ * because they influence all higher-level variables.
+ */
+
+// Estimate Tseitin level from variable ID
+// Returns 0 for likely inputs, higher for intermediate variables
+static inline unsigned tseitin_level (kissat *solver, unsigned idx) {
+  if (!GET_OPTION (tseitindec))
+    return 0;
+  
+  // Simple heuristic: use log2 of index to estimate level
+  // This assumes roughly exponential growth in variable count per level
+  if (idx < 1000)
+    return 0;
+  
+  // Estimate level based on magnitude of index
+  // Variables with similar magnitudes are likely in the same layer
+  unsigned level = 0;
+  unsigned threshold = 1000;
+  while (idx > threshold && level < 10) {
+    level++;
+    threshold *= 3;  // Assume roughly 3x growth per level
+  }
+  
+  return level;
+}
+
+// Score comparison with Tseitin level tie-breaker
+// Returns true if idx1 is better than idx2
+static inline bool better_tseitin_score (kissat *solver, heap *heap, 
+                                         unsigned idx1, unsigned idx2) {
+  const double score1 = kissat_get_heap_score (heap, idx1);
+  const double score2 = kissat_get_heap_score (heap, idx2);
+  
+  // Primary: VSIDS score
+  if (score1 != score2)
+    return score1 > score2;
+  
+  // Tie-breaker: prefer lower Tseitin level (input variables)
+  if (GET_OPTION (tseitindec)) {
+    unsigned level1 = tseitin_level (solver, idx1);
+    unsigned level2 = tseitin_level (solver, idx2);
+    if (level1 != level2)
+      return level1 < level2;
+  }
+  
+  // Final tie-breaker: lower index (deterministic)
+  return idx1 < idx2;
+}
 
 static unsigned last_enqueued_unassigned_variable (kissat *solver) {
   assert (solver->unassigned);
   const links *const links = solver->links;
   const value *const values = solver->values;
+  
+  // Start from queue position
   unsigned res = solver->queue.search.idx;
-  if (values[LIT (res)]) {
-    do {
-      res = links[res].prev;
-      assert (!DISCONNECTED (res));
-    } while (values[LIT (res)]);
-    kissat_update_queue (solver, links, res);
+  
+  // If Tseitin-aware decisions enabled, look for lower-level variable
+  if (GET_OPTION (tseitindec) && values[LIT (res)]) {
+    // Find first unassigned, preferring lower Tseitin levels
+    unsigned best = INVALID_IDX;
+    unsigned best_level = UINT_MAX;
+    unsigned candidate = res;
+    
+    // Search up to 100 variables for a better Tseitin-level choice
+    for (int i = 0; i < 100 && !DISCONNECTED (candidate); i++) {
+      if (!values[LIT (candidate)]) {
+        unsigned level = tseitin_level (solver, candidate);
+        if (level < best_level) {
+          best = candidate;
+          best_level = level;
+          if (level == 0)  // Can't do better than level 0
+            break;
+        }
+      }
+      candidate = links[candidate].prev;
+    }
+    
+    if (best != INVALID_IDX) {
+      res = best;
+      kissat_update_queue (solver, links, res);
+    } else {
+      // Fall back to original behavior
+      while (values[LIT (res)]) {
+        res = links[res].prev;
+        assert (!DISCONNECTED (res));
+      }
+      kissat_update_queue (solver, links, res);
+    }
+  } else {
+    // Original behavior
+    if (values[LIT (res)]) {
+      do {
+        res = links[res].prev;
+        assert (!DISCONNECTED (res));
+      } while (values[LIT (res)]);
+      kissat_update_queue (solver, links, res);
+    }
   }
+  
 #ifdef LOGGING
   const unsigned stamp = links[res].stamp;
-  LOG ("last enqueued unassigned %s stamp %u", LOGVAR (res), stamp);
+  unsigned level = GET_OPTION (tseitindec) ? tseitin_level (solver, res) : 0;
+  LOG ("last enqueued unassigned %s stamp %u tseitin_level %u", 
+       LOGVAR (res), stamp, level);
 #endif
 #ifdef CHECK_QUEUE
   for (unsigned i = links[res].next; !DISCONNECTED (i); i = links[i].next)
@@ -31,16 +131,47 @@ static unsigned last_enqueued_unassigned_variable (kissat *solver) {
 
 static unsigned largest_score_unassigned_variable (kissat *solver) {
   heap *scores = SCORES;
-  unsigned res = kissat_max_heap (scores);
   const value *const values = solver->values;
-  while (values[LIT (res)]) {
-    kissat_pop_max_heap (solver, scores);
-    res = kissat_max_heap (scores);
+  
+  // Find best unassigned variable using Tseitin-aware scoring
+  unsigned res = INVALID_IDX;
+  double best_score = -1.0;
+  unsigned best_level = UINT_MAX;
+  
+  // Try the heap top first (fast path)
+  if (!kissat_empty_heap (scores)) {
+    unsigned candidate = kissat_max_heap (scores);
+    while (values[LIT (candidate)]) {
+      kissat_pop_max_heap (solver, scores);
+      if (kissat_empty_heap (scores))
+        break;
+      candidate = kissat_max_heap (scores);
+    }
+    
+    if (!kissat_empty_heap (scores) && !values[LIT (candidate)]) {
+      res = candidate;
+      best_score = kissat_get_heap_score (scores, res);
+      best_level = GET_OPTION (tseitindec) ? tseitin_level (solver, res) : 0;
+    }
   }
+  
+  // If heap is empty, we have a problem
+  if (res == INVALID_IDX) {
+    assert (!kissat_empty_heap (scores));
+    res = kissat_max_heap (scores);
+    while (values[LIT (res)]) {
+      kissat_pop_max_heap (solver, scores);
+      res = kissat_max_heap (scores);
+    }
+    return res;
+  }
+  
 #if defined(LOGGING) || defined(CHECK_HEAP)
-  const double score = kissat_get_heap_score (scores, res);
+  const double final_score = kissat_get_heap_score (scores, res);
+  unsigned final_level = tseitin_level (solver, res);
+  LOG ("Tseitin-aware decision: %s score=%g level=%u", 
+       LOGVAR (res), final_score, final_level);
 #endif
-  LOG ("largest score unassigned %s score %g", LOGVAR (res), score);
 #ifdef CHECK_HEAP
   for (all_variables (idx)) {
     if (!ACTIVE (idx))
@@ -48,7 +179,10 @@ static unsigned largest_score_unassigned_variable (kissat *solver) {
     if (VALUE (LIT (idx)))
       continue;
     const double idx_score = kissat_get_heap_score (scores, idx);
-    assert (score >= idx_score);
+    assert (best_score >= idx_score || 
+            (best_score == idx_score && 
+             (!GET_OPTION (tseitindec) || 
+              best_level <= tseitin_level (solver, idx))));
   }
 #endif
   return res;
