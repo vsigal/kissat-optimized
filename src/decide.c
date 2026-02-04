@@ -41,25 +41,115 @@ static inline unsigned tseitin_level (kissat *solver, unsigned idx) {
   return level;
 }
 
-static unsigned last_enqueued_unassigned_variable (kissat *solver) {
+// Find best unassigned variable in queue, preferring lower Tseitin levels
+// Always returns a valid unassigned variable (asserted)
+static unsigned find_tseitin_preferred_variable (kissat *solver) {
   assert (solver->unassigned);
   const links *const links = solver->links;
   const value *const values = solver->values;
-  unsigned res = solver->queue.search.idx;
-  if (values[LIT (res)]) {
-    do {
-      res = links[res].prev;
-      assert (!DISCONNECTED (res));
-    } while (values[LIT (res)]);
-    kissat_update_queue (solver, links, res);
+  
+  // Start from current queue position
+  unsigned start = solver->queue.search.idx;
+  unsigned res = start;
+  
+  // If already unassigned, we're done (fast path)
+  if (!values[LIT (res)])
+    return res;
+  
+  // Search for best unassigned variable
+  unsigned best = INVALID_IDX;
+  unsigned best_level = UINT_MAX;
+  unsigned first_unassigned = INVALID_IDX;
+  unsigned candidate = res;
+  
+  // First pass: find the first unassigned (fallback) + best Tseitin level
+  for (int i = 0; i < 1000 && !DISCONNECTED (candidate); i++) {
+    unsigned lit = LIT (candidate);
+    if (!values[lit]) {
+      // Record first unassigned as fallback
+      if (first_unassigned == INVALID_IDX)
+        first_unassigned = candidate;
+      
+      // Check Tseitin level
+      unsigned level = tseitin_level (solver, candidate);
+      if (level < best_level) {
+        best = candidate;
+        best_level = level;
+        if (level == 0)  // Can't do better than level 0
+          break;
+      }
+    }
+    candidate = links[candidate].prev;
   }
+  
+  // Determine result: prefer best Tseitin level, fallback to first unassigned
+  if (best != INVALID_IDX) {
+    res = best;
+  } else if (first_unassigned != INVALID_IDX) {
+    res = first_unassigned;
+  } else {
+    // Emergency fallback: scan forward from start to find any unassigned
+    // This shouldn't happen but ensures we never return invalid
+    candidate = start;
+    for (int i = 0; i < 10000 && !DISCONNECTED (candidate); i++) {
+      if (!values[LIT (candidate)]) {
+        res = candidate;
+        break;
+      }
+      candidate = links[candidate].next;
+    }
+    
+    // Final emergency: scan all variables
+    if (values[LIT (res)]) {
+      for (unsigned idx = 0; idx < VARS; idx++) {
+        if (ACTIVE (idx) && !values[LIT (idx)]) {
+          res = idx;
+          break;
+        }
+      }
+    }
+  }
+  
+  // CRITICAL: Must return an unassigned variable
+  assert (!values[LIT (res)]);
+  assert (!DISCONNECTED (res));
+  
+  // Update queue position
+  kissat_update_queue (solver, links, res);
+  
+  return res;
+}
+
+static unsigned last_enqueued_unassigned_variable (kissat *solver) {
+  assert (solver->unassigned);
+  
+  unsigned res;
+  if (GET_OPTION (tseitindec)) {
+    // Use Tseitin-aware selection
+    res = find_tseitin_preferred_variable (solver);
+  } else {
+    // Original behavior
+    const links *const links = solver->links;
+    const value *const values = solver->values;
+    res = solver->queue.search.idx;
+    if (values[LIT (res)]) {
+      do {
+        res = links[res].prev;
+        assert (!DISCONNECTED (res));
+      } while (values[LIT (res)]);
+      kissat_update_queue (solver, links, res);
+    }
+  }
+  
 #ifdef LOGGING
+  const links *const links = solver->links;
   const unsigned stamp = links[res].stamp;
   unsigned level = GET_OPTION (tseitindec) ? tseitin_level (solver, res) : 0;
   LOG ("last enqueued unassigned %s stamp %u tseitin_level %u", 
        LOGVAR (res), stamp, level);
 #endif
 #ifdef CHECK_QUEUE
+  const links *const links = solver->links;
   for (unsigned i = links[res].next; !DISCONNECTED (i); i = links[i].next)
     assert (VALUE (LIT (i)));
 #endif
