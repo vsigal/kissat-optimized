@@ -1,5 +1,0 @@
-#define VERSION "4.0.4"
-#define COMPILER "/usr/bin/gcc-12 -W -O3 -g -DEMBEDDED -DLOGGING -DMETRICS "
-#define ID "cf88df3f3d9a8dadd727af05a47a8a1231335c2b"
-#define BUILD "Wed Feb 4 22:44:45 AEDT 2026 Linux SnowNet1 6.8.0-94-generic x86_64"
-#define DIR "/home/vsigal/src/kissat/build_profile"
