@@ -16,7 +16,7 @@ embedded=unknown
 extreme=no
 kitten=unknown
 logging=unknown
-lto=yes
+lto=no
 m32=no
 metrics=unknown
 optimize=unknown
@@ -558,7 +558,7 @@ case "$CC" in
     CFLAGS="$CFLAGS -W"
     if [ $optimize = unknown ]
     then
-      [ $debug = no ] && CFLAGS="$CFLAGS -O3 -march=native"
+      [ $debug = no ] && CFLAGS="$CFLAGS -O"
     else
       CFLAGS="$CFLAGS -O$optimize"
     fi
@@ -617,9 +617,6 @@ fi
 [ $sat = yes ] && CFLAGS="$CFLAGS -DSAT"
 [ $statistics = yes -a $metrics = no ] && CFLAGS="$CFLAGS -DSTATISTICS"
 [ $unsat = yes ] && CFLAGS="$CFLAGS -DUNSAT"
-
-# Add LTO flags if enabled (default)
-[ $lto = yes ] && passtocompiler="$passtocompiler -flto" && passtolinker="$passtolinker -flto"
 
 CFLAGS="${CFLAGS}$passtocompiler"
 

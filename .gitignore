@@ -26,3 +26,30 @@ perf.data.old
 *~
 *.swp
 *.swo
+
+# Archive/backup files
+*.tar.gz
+*.orig
+*.dirty
+*.v2
+*.v10
+*.v10.aocc
+*.v12
+*.v13
+*.v13b
+*.v13c
+(1)
+
+# Temporary/backup source files
+src/*.orig
+src/*.dirty
+src/*.dirty2
+src/*.v*
+src/(1)*
+
+# Variant directories (keep only active one if needed)
+kissat_dirty_flush_*/
+
+# Test files
+[0-9]
+f1_result.txt

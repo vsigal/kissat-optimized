@@ -31,6 +31,14 @@ kissat_delay_watching_large (kissat *solver, unsigneds *const delayed,
   PUSH_STACK (*delayed, ref);
 }
 
+#if defined(__GNUC__) || defined(__clang__)
+#define KISSAT_PROPLIT_LIKELY(X) __builtin_expect(!!(X), 1)
+#define KISSAT_PROPLIT_UNLIKELY(X) __builtin_expect(!!(X), 0)
+#else
+#define KISSAT_PROPLIT_LIKELY(X) (X)
+#define KISSAT_PROPLIT_UNLIKELY(X) (X)
+#endif
+
 static inline clause *PROPAGATE_LITERAL (kissat *solver,
 #if defined(PROBING_PROPAGATION)
                                          const clause *const ignore,
@@ -73,13 +81,10 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
     const unsigned blocking = head.blocking.lit;
     assert (VALID_INTERNAL_LITERAL (blocking));
     const value blocking_value = values[blocking];
-    const bool binary = head.type.binary;
-    watch tail;
-    if (!binary)
-      tail = *q++ = *p++;
-    if (blocking_value > 0)
-      continue;
-    if (binary) {
+
+    if (head.type.binary) {
+      if (KISSAT_PROPLIT_LIKELY (blocking_value > 0))
+        continue;
       if (blocking_value < 0) {
         res = kissat_binary_conflict (solver, not_lit, blocking);
 #ifndef CONTINUE_PROPAGATING_AFTER_CONFLICT
@@ -92,11 +97,14 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
         ticks++;
       }
     } else {
+      const watch tail = *q++ = *p++;
+      if (KISSAT_PROPLIT_LIKELY (blocking_value > 0))
+        continue;
       const reference ref = tail.raw;
       assert (ref < SIZE_STACK (solver->arena));
       clause *const c = (clause *) (arena + ref);
       ticks++;
-      if (c->garbage) {
+      if (KISSAT_PROPLIT_UNLIKELY (c->garbage)) {
         q -= 2;
         continue;
       }
@@ -107,10 +115,66 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
       assert (not_lit != other);
       assert (lit != other);
       const value other_value = values[other];
-      if (other_value > 0) {
+      if (KISSAT_PROPLIT_LIKELY (other_value > 0)) {
         q[-2].blocking.lit = other;
         continue;
       }
+      if (KISSAT_PROPLIT_UNLIKELY (c->size != 3))
+        goto scan_replacement;
+      {
+        const unsigned replacement = lits[2];
+        assert (VALID_INTERNAL_LITERAL (replacement));
+        const value replacement_value = values[replacement];
+
+        // Common ternary case: move watch to the only replacement literal.
+        if (KISSAT_PROPLIT_LIKELY (replacement_value >= 0)) {
+          c->searched = 2;
+          assert (replacement != INVALID_LIT);
+          LOGREF3 (ref, "unwatching %s in", LOGLIT (not_lit));
+          q -= 2;
+          lits[0] = other;
+          lits[1] = replacement;
+          assert (lits[0] != lits[1]);
+          lits[2] = not_lit;
+          kissat_delay_watching_large (solver, delayed, replacement, other,
+                                       ref);
+          ticks++;
+          continue;
+        }
+
+        assert (replacement_value < 0);
+
+        // No replacement: either conflict (other false) or unit (other unassigned).
+        if (other_value) {
+          assert (blocking_value < 0);
+          assert (other_value < 0);
+#if defined(PROBING_PROPAGATION)
+          if (c == ignore) {
+            LOGREF (ref, "conflicting but ignored");
+            continue;
+          }
+#endif
+          LOGREF (ref, "conflicting");
+          res = c;
+#ifndef CONTINUE_PROPAGATING_AFTER_CONFLICT
+          break;
+#endif
+          continue;
+        }
+
+#if defined(PROBING_PROPAGATION)
+        if (c == ignore) {
+          LOGREF (ref, "forcing %s but ignored", LOGLIT (other));
+          continue;
+        }
+#endif
+        kissat_fast_assign_reference (solver, values, assigned, other, ref,
+                                      c);
+        ticks++;
+        continue;
+      }
+scan_replacement:
+      ;
       const unsigned *const end_lits = lits + c->size;
       unsigned *const searched = lits + c->searched;
       assert (c->lits + 2 <= searched);
@@ -134,7 +198,7 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
         }
       }
 
-      if (replacement_value >= 0) {
+      if (KISSAT_PROPLIT_LIKELY (replacement_value >= 0)) {
         c->searched = r - lits;
         assert (replacement != INVALID_LIT);
         LOGREF3 (ref, "unwatching %s in", LOGLIT (not_lit));
@@ -185,6 +249,9 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
 
   return res;
 }
+
+#undef KISSAT_PROPLIT_LIKELY
+#undef KISSAT_PROPLIT_UNLIKELY
 
 static inline void kissat_update_conflicts_and_trail (kissat *solver,
                                                       clause *conflict,
