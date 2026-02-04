@@ -488,14 +488,12 @@ void kissat_simd_mark_literals (value *marks,
     const size_t simd_width = 16;
     size_t i = 0;
     
-    // Process 16 indices at once, but scatter individually
-    // (scatters are slow, so we just use this for prefetching)
+    // Process 16 indices at once with software prefetching
     for (; i + simd_width <= size; i += simd_width) {
-      __m512i indices = _mm512_loadu_si512 ((__m512i *)(lits + i));
-      // Prefetch mark locations
-      _mm512_prefetch_i32scatter_ps (marks, indices, 1, _MM_HINT_T0);
+      // Prefetch next batch of literals
+      _mm_prefetch ((const char *)(lits + i + simd_width), _MM_HINT_T0);
       
-      // Actually set the marks
+      // Actually set the marks (scatter is slow, do scalar stores)
       for (size_t j = 0; j < simd_width; j++) {
         marks[lits[i + j]] = mark_value;
       }
