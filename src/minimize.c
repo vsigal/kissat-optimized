@@ -152,6 +152,37 @@ void kissat_reset_poisoned (kissat *solver) {
   CLEAR_STACK (solver->poisoned);
 }
 
+/*
+ * Fast-path for binary-reason literals
+ * 
+ * If a literal's reason is binary and the other literal in that reason
+ * is also in the learned clause, then this literal is redundant.
+ * This is a quick O(1) check before the expensive recursive minimization.
+ */
+static bool fast_binary_minimize_check (kissat *solver, assigned *assigned,
+                                        unsigned lit, unsigned *lits, 
+                                        unsigned size) {
+  const unsigned idx = IDX (lit);
+  struct assigned *a = assigned + idx;
+  
+  // Only for binary reasons
+  if (!a->binary) return false;
+  if (a->reason == DECISION_REASON) return false;
+  if (!a->level) return true;  // Root level - can always remove
+  
+  const unsigned other = a->reason;
+  const unsigned other_idx = IDX (other);
+  
+  // Check if the other literal of the binary reason is in the clause
+  // This is O(size) but size is usually small (< 50)
+  for (unsigned i = 0; i < size; i++) {
+    if (IDX (lits[i]) == other_idx)
+      return true;  // Other literal is in clause, so this one is redundant
+  }
+  
+  return false;
+}
+
 void kissat_minimize_clause (kissat *solver) {
   START (minimize);
 
@@ -162,6 +193,7 @@ void kissat_minimize_clause (kissat *solver) {
 
   unsigned *lits = BEGIN_STACK (solver->clause);
   unsigned *end = END_STACK (solver->clause);
+  unsigned size = end - lits;
 
   assigned *assigned = solver->assigned;
 #ifndef NDEBUG
@@ -181,7 +213,19 @@ void kissat_minimize_clause (kissat *solver) {
 
   for (unsigned *p = end; --p > lits;) {
     const unsigned lit = *p;
+#ifndef NDEBUG
     assert (lit != not_uip);
+#endif
+    
+    // Fast check for binary-redundant literals
+    if (fast_binary_minimize_check (solver, assigned, lit, lits, size)) {
+      LOG ("fast-minimized literal %s (binary reason)", LOGLIT (lit));
+      *p = INVALID_LIT;
+      minimized++;
+      continue;
+    }
+    
+    // Full recursive minimization
     if (minimize_literal (solver, true, assigned, lit, 0)) {
       LOG ("minimized literal %s", LOGLIT (lit));
       *p = INVALID_LIT;
