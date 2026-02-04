@@ -199,70 +199,133 @@ select_compiler() {
     fi
 }
 
+# Detect CPU SIMD capabilities
+detect_cpu_features() {
+    local cpu_flags=$(grep -m1 'flags' /proc/cpuinfo | cut -d: -f2)
+    
+    HAS_AVX512F=$(echo "$cpu_flags" | grep -c 'avx512f')
+    HAS_AVX512BW=$(echo "$cpu_flags" | grep -c 'avx512bw')
+    HAS_AVX512VL=$(echo "$cpu_flags" | grep -c 'avx512vl')
+    HAS_AVX512VPOPCNT=$(echo "$cpu_flags" | grep -c 'avx512_vpopcntdq')
+    HAS_AVX512BITALG=$(echo "$cpu_flags" | grep -c 'avx512_bitalg')
+    HAS_GFNI=$(echo "$cpu_flags" | grep -c 'gfni')
+    HAS_AVX2=$(echo "$cpu_flags" | grep -c 'avx2')
+    HAS_AVX=$(echo "$cpu_flags" | grep -c ' avx ')
+}
+
 # Set compiler flags for GCC (Intel-optimized)
 set_gcc_flags_intel() {
-    # Intel Sapphire Rapids / Emerald Rapids (4th/5th gen Xeon)
-    # Supports: AVX-512, GFNI, VPOPCNTDQ, BITALG, VBMI2, VNNI, BF16
+    detect_cpu_features
     
-    CFLAGS="-march=sapphirerapids"
-    CFLAGS="${CFLAGS} -O3"
-    CFLAGS="${CFLAGS} -fomit-frame-pointer"
-    CFLAGS="${CFLAGS} -ffast-math"
-    CFLAGS="${CFLAGS} -funroll-loops"
-    
-    # Enable all relevant instruction sets
-    CFLAGS="${CFLAGS} -mavx512f -mavx512bw -mavx512vl"
-    CFLAGS="${CFLAGS} -mavx512vpopcntdq -mavx512bitalg"
-    CFLAGS="${CFLAGS} -mgfni -mavx512vbmi -mavx512vbmi2"
-    CFLAGS="${CFLAGS} -mavx512vnni -mavx512bf16"
-    
-    # Link-time optimization
-    CFLAGS="${CFLAGS} -flto=auto"
-    LDFLAGS="-flto=auto"
+    if [[ $HAS_AVX512F -gt 0 ]]; then
+        # Intel Sapphire Rapids / Emerald Rapids (4th/5th gen Xeon)
+        # Supports: AVX-512, GFNI, VPOPCNTDQ, BITALG, VBMI2, VNNI, BF16
+        
+        CFLAGS="-march=sapphirerapids"
+        CFLAGS="${CFLAGS} -O3"
+        CFLAGS="${CFLAGS} -fomit-frame-pointer"
+        CFLAGS="${CFLAGS} -ffast-math"
+        CFLAGS="${CFLAGS} -funroll-loops"
+        
+        # Enable all relevant instruction sets
+        CFLAGS="${CFLAGS} -mavx512f -mavx512bw -mavx512vl"
+        [[ $HAS_AVX512VPOPCNT -gt 0 ]] && CFLAGS="${CFLAGS} -mavx512vpopcntdq"
+        [[ $HAS_AVX512BITALG -gt 0 ]] && CFLAGS="${CFLAGS} -mavx512bitalg"
+        [[ $HAS_GFNI -gt 0 ]] && CFLAGS="${CFLAGS} -mgfni"
+        CFLAGS="${CFLAGS} -mavx512vbmi -mavx512vbmi2"
+        CFLAGS="${CFLAGS} -mavx512vnni -mavx512bf16"
+        
+        # Link-time optimization
+        CFLAGS="${CFLAGS} -flto=auto"
+        LDFLAGS="-flto=auto"
+        
+        echo -e "${GREEN}GCC flags for Intel (AVX-512):${NC}"
+        echo "  Architecture: Sapphire Rapids"
+        echo "  SIMD: AVX-512 + GFNI + VPOPCNTDQ + BITALG"
+    elif [[ $HAS_AVX2 -gt 0 ]]; then
+        # AVX2 only (Haswell and newer)
+        CFLAGS="-march=haswell"
+        CFLAGS="${CFLAGS} -O3"
+        CFLAGS="${CFLAGS} -fomit-frame-pointer"
+        CFLAGS="${CFLAGS} -ffast-math"
+        CFLAGS="${CFLAGS} -funroll-loops"
+        [[ $HAS_GFNI -gt 0 ]] && CFLAGS="${CFLAGS} -mgfni"
+        
+        echo -e "${YELLOW}GCC flags for Intel (AVX2):${NC}"
+        echo "  Architecture: Haswell+"
+        echo "  SIMD: AVX2 (AVX-512 not available on this CPU)"
+    else
+        # Generic x86-64
+        CFLAGS="-march=x86-64-v2"
+        CFLAGS="${CFLAGS} -O3"
+        
+        echo -e "${YELLOW}GCC flags (Generic x86-64):${NC}"
+        echo "  Architecture: x86-64-v2"
+        echo "  SIMD: SSE4.2 (AVX not available)"
+    fi
     
     CC="gcc"
-    
-    echo -e "${GREEN}GCC flags for Intel:${NC}"
-    echo "  Architecture: Sapphire Rapids"
-    echo "  SIMD: AVX-512 + GFNI + VPOPCNTDQ + BITALG"
 }
 
 # Set compiler flags for AOCC (AMD Genoa 4/5)
 set_aocc_flags_amd() {
-    # AMD Genoa (Zen 4) / Genoa-X / Bergamo
-    # Supports: AVX-512, GFNI, VPOPCNTDQ, BITALG, VBMI2
-    # Also supports: VAES, VPCLMULQDQ
+    detect_cpu_features
     
-    CFLAGS="-march=znver4"
-    CFLAGS="${CFLAGS} -O3"
-    CFLAGS="${CFLAGS} -fomit-frame-pointer"
-    CFLAGS="${CFLAGS} -ffast-math"
-    CFLAGS="${CFLAGS} -funroll-loops"
-    
-    # AMD-specific optimizations
-    CFLAGS="${CFLAGS} -mavx512f -mavx512bw -mavx512vl"
-    CFLAGS="${CFLAGS} -mavx512vpopcntdq -mavx512bitalg"
-    CFLAGS="${CFLAGS} -mgfni -mavx512vbmi -mavx512vbmi2"
-    CFLAGS="${CFLAGS} -mvaes -mvpclmulqdq"
-    
-    # AOCC-specific optimizations
-    CFLAGS="${CFLAGS} -finline-functions"
-    CFLAGS="${CFLAGS} -fvectorize"
-    CFLAGS="${CFLAGS} -fslp-vectorize"
-    
-    # Link-time optimization
-    CFLAGS="${CFLAGS} -flto"
-    LDFLAGS="-flto -fuse-ld=lld"
+    if [[ $HAS_AVX512F -gt 0 ]]; then
+        # AMD Genoa (Zen 4) / Genoa-X / Bergamo
+        # Supports: AVX-512, GFNI, VPOPCNTDQ, BITALG, VBMI2
+        # Also supports: VAES, VPCLMULQDQ
+        
+        CFLAGS="-march=znver4"
+        CFLAGS="${CFLAGS} -O3"
+        CFLAGS="${CFLAGS} -fomit-frame-pointer"
+        CFLAGS="${CFLAGS} -ffast-math"
+        CFLAGS="${CFLAGS} -funroll-loops"
+        
+        # AMD-specific optimizations
+        CFLAGS="${CFLAGS} -mavx512f -mavx512bw -mavx512vl"
+        [[ $HAS_AVX512VPOPCNT -gt 0 ]] && CFLAGS="${CFLAGS} -mavx512vpopcntdq"
+        [[ $HAS_AVX512BITALG -gt 0 ]] && CFLAGS="${CFLAGS} -mavx512bitalg"
+        [[ $HAS_GFNI -gt 0 ]] && CFLAGS="${CFLAGS} -mgfni"
+        CFLAGS="${CFLAGS} -mavx512vbmi -mavx512vbmi2"
+        CFLAGS="${CFLAGS} -mvaes -mvpclmulqdq"
+        
+        # AOCC-specific optimizations
+        CFLAGS="${CFLAGS} -finline-functions"
+        CFLAGS="${CFLAGS} -fvectorize"
+        CFLAGS="${CFLAGS} -fslp-vectorize"
+        
+        # Link-time optimization
+        CFLAGS="${CFLAGS} -flto"
+        LDFLAGS="-flto -fuse-ld=lld"
+        
+        echo -e "${GREEN}AOCC flags for AMD Genoa 4/5 (AVX-512):${NC}"
+        echo "  Architecture: Zen 4 (znver4)"
+        echo "  SIMD: AVX-512 + GFNI + VPOPCNTDQ + BITALG + VAES"
+    elif [[ $HAS_AVX2 -gt 0 ]]; then
+        # Zen 3 or older
+        CFLAGS="-march=znver3"
+        CFLAGS="${CFLAGS} -O3"
+        CFLAGS="${CFLAGS} -fomit-frame-pointer"
+        [[ $HAS_GFNI -gt 0 ]] && CFLAGS="${CFLAGS} -mgfni"
+        
+        echo -e "${YELLOW}AOCC flags for AMD (AVX2):${NC}"
+        echo "  Architecture: Zen 3"
+        echo "  SIMD: AVX2 (AVX-512 not available)"
+    else
+        CFLAGS="-march=x86-64-v2"
+        CFLAGS="${CFLAGS} -O3"
+        
+        echo -e "${YELLOW}AOCC flags (Generic):${NC}"
+        echo "  Architecture: x86-64-v2"
+        echo "  SIMD: SSE4.2"
+    fi
     
     CC="${AOCC_BIN}"
     
     # Set environment for AOCC
     export PATH="${AOCC_PATH}/bin:${PATH}"
     export LD_LIBRARY_PATH="${AOCC_PATH}/lib:${LD_LIBRARY_PATH}"
-    
-    echo -e "${GREEN}AOCC flags for AMD Genoa 4/5:${NC}"
-    echo "  Architecture: Zen 4 (znver4)"
-    echo "  SIMD: AVX-512 + GFNI + VPOPCNTDQ + BITALG + VAES"
 }
 
 # Set generic flags as fallback
@@ -319,18 +382,12 @@ build() {
     export LDFLAGS
     
     # Run configure
-    # Configure with custom CFLAGS - use --options to pass flags properly
-    echo "Running configure with custom flags..."
-    
-    # Create a configure command that preserves our CFLAGS
-    CONFIGURE_OPTS=""
+    echo "Running configure..."
     
     if [[ $VERBOSE -eq 1 ]]; then
-        # Show full configure output
-        eval "CFLAGS='${CFLAGS}' LDFLAGS='${LDFLAGS}' ../configure"
+        ../configure
     else
-        eval "CFLAGS='${CFLAGS}' LDFLAGS='${LDFLAGS}' ../configure" 2>&1 | \
-            grep -E "(compiler|configure:|AVX|SIMD|CFLAGS|gcc|clang)" || true
+        ../configure 2>&1 | grep -E "(compiler|configure:|gcc|clang)" || true
     fi
     
     # After configure, we need to modify the makefile to use our flags
@@ -340,9 +397,19 @@ build() {
     # Get the CFLAGS we want to use
     OUR_CFLAGS="${CFLAGS}"
     
-    # Modify the generated makefile to use our CFLAGS as base
-    sed -i "s|^CC=.*|CC=${CC}|" makefile
-    sed -i "s|^CFLAGS =.*|CFLAGS = ${OUR_CFLAGS}|" makefile
+    # The makefile has CC with embedded flags - we need to fix this
+    # Replace CC line to just the compiler, no flags
+    sed -i 's|^CC=/usr/bin/gcc-12.*|CC=/usr/bin/gcc-12|' makefile
+    
+    # Ensure CFLAGS is set
+    if ! grep -q "^CFLAGS" makefile; then
+        sed -i "/^CC=/a\\CFLAGS = ${OUR_CFLAGS}" makefile
+    else
+        sed -i "s|^CFLAGS.*|CFLAGS = ${OUR_CFLAGS}|" makefile
+    fi
+    
+    # Fix the pattern rule to use CFLAGS
+    sed -i 's|$(CC) -c $<|$(CC) $(CFLAGS) -c $<|' makefile
     
     echo "CC=${CC}"
     echo "CFLAGS=${OUR_CFLAGS}"
