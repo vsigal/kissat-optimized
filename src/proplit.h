@@ -215,8 +215,6 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
       // Large clause path (>3 literals)
       // Further specialization: small (4-8) vs large (>8)
       
-scan_replacement:
-      ;
       unsigned replacement = INVALID_LIT;
       value replacement_value = -1;
       size_t r_idx = 0;
@@ -227,7 +225,6 @@ scan_replacement:
       // LOOP UNROLLING: Process 2 elements at a time to reduce loop overhead
       if (size <= 8) {
         // Small clause: unrolled scalar search
-        const unsigned *const end_lits = lits + size;
         unsigned *const searched = lits + c->searched;
         unsigned start_idx = searched - lits;
         
