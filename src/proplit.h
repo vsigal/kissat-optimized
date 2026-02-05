@@ -284,13 +284,28 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
             }
           }
         }
+      } else if (size <= 16) {
+        // Medium clause (9-16): Simple scalar search
+        // SIMD gather has high latency; scalar is faster for this range
+        for (unsigned i = c->searched; i < size; i++) {
+          if (values[lits[i]] >= 0) {
+            replacement = lits[i]; r_idx = i; found = true; break;
+          }
+        }
+        if (!found) {
+          for (unsigned j = 2; j < c->searched; j++) {
+            if (values[lits[j]] >= 0) {
+              replacement = lits[j]; r_idx = j; found = true; break;
+            }
+          }
+        }
       } else {
-        // Large clause: use SIMD-accelerated search
+        // Large clause (>16): use SIMD-accelerated search
         const unsigned *const end_lits = lits + size;
         unsigned *const searched = lits + c->searched;
         
         KISSAT_PROPLIT_PREFETCH(lits);
-        if (size > 16)
+        if (size > 32)
           KISSAT_PROPLIT_PREFETCH(lits + 16);
         
         found = kissat_simd_find_non_false (values, lits,
