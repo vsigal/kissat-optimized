@@ -224,29 +224,66 @@ scan_replacement:
       
       // OPTIMIZATION: Unrolled scalar search for small clauses (4-8 literals)
       // This avoids SIMD overhead for small sizes and gives predictable branches
+      // LOOP UNROLLING: Process 2 elements at a time to reduce loop overhead
       if (size <= 8) {
-        // Small clause: unrolled scalar search (within budget)
+        // Small clause: unrolled scalar search
         const unsigned *const end_lits = lits + size;
         unsigned *const searched = lits + c->searched;
+        unsigned start_idx = searched - lits;
         
-        // Search from searched position to end
-        for (unsigned i = searched - lits; i < size; i++) {
-          if (values[lits[i]] >= 0) {
+        // Search from searched position to end - UNROLLED 2x
+        // Process pairs of literals to reduce branch mispredictions
+        unsigned i = start_idx;
+        for (; i + 1 < size; i += 2) {
+          value v0 = values[lits[i]];
+          value v1 = values[lits[i + 1]];
+          if (v0 >= 0) {
             replacement = lits[i];
             r_idx = i;
             found = true;
             break;
           }
+          if (v1 >= 0) {
+            replacement = lits[i + 1];
+            r_idx = i + 1;
+            found = true;
+            break;
+          }
+        }
+        // Handle remaining element (odd size)
+        if (!found && i < size) {
+          if (values[lits[i]] >= 0) {
+            replacement = lits[i];
+            r_idx = i;
+            found = true;
+          }
         }
         
-        // If not found, search from position 2 to searched position
+        // If not found, search from position 2 to searched position - UNROLLED 2x
         if (!found) {
-          for (unsigned i = 2; i < (unsigned)(searched - lits); i++) {
-            if (values[lits[i]] >= 0) {
-              replacement = lits[i];
-              r_idx = i;
+          unsigned j = 2;
+          for (; j + 1 < start_idx; j += 2) {
+            value v0 = values[lits[j]];
+            value v1 = values[lits[j + 1]];
+            if (v0 >= 0) {
+              replacement = lits[j];
+              r_idx = j;
               found = true;
               break;
+            }
+            if (v1 >= 0) {
+              replacement = lits[j + 1];
+              r_idx = j + 1;
+              found = true;
+              break;
+            }
+          }
+          // Handle remaining element
+          if (!found && j < start_idx) {
+            if (values[lits[j]] >= 0) {
+              replacement = lits[j];
+              r_idx = j;
+              found = true;
             }
           }
         }
