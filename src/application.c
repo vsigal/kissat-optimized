@@ -10,6 +10,7 @@
 #include "print.h"
 #include "proof.h"
 #include "resources.h"
+#include "simdscan.h"
 #include "witness.h"
 
 #include <inttypes.h>
@@ -780,6 +781,9 @@ static int run_application (kissat *solver, int argc, char **argv,
     *cancel_alarm_ptr = true;
   if (!ok)
     return 1;
+  
+  // Initialize SIMD support after options are parsed (for proper verbosity)
+  kissat_init_simd_support (solver);
 #ifndef QUIET
   kissat_section (solver, "banner");
   if (!GET_OPTION (quiet)) {

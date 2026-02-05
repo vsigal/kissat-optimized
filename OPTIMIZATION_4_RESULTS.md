@@ -1,69 +1,41 @@
-# Optimization #4: Variable Decision Cache - Results
+# Optimization #4: Conflict Batching - Results
 
-## Summary
+## Status: ⚠️ Reverted
 
-**MAJOR BREAKTHROUGH**: Variable Decision Cache achieved **24.6% speedup** on f1.cnf!
+### Attempt
+Implemented conflict batching with:
+- Batch size of 4 conflicts
+- Delayed bumping of analyzed variables
+- Single-pass batch bump for better cache locality
 
-## Implementation
+### Implementation Details
+Added to `src/analyze.c`:
+- `conflict_batch_full()` - Check if batch is full
+- `conflict_batch_add()` - Add conflict to batch
+- `conflict_batch_process()` - Process full batch
+- `batch_bump_analyzed()` - Batch bump all analyzed variables
 
-### Design
-- 8-entry LRU cache for top decision candidates
-- Cache populated from VSIDS score heap
-- LRU eviction within the cache
-- Cache invalidated on:
-  - Variable assignment (decision made)
-  - Score bumps (during conflict analysis)
+### Results
+- **Before (Opt #2 only)**: ~148-149s
+- **With Opt #4**: ~150-152s
+- **Difference**: +2-3s (1-2% slower)
 
-### Code Changes
-- `internal.h`: Added decision cache fields to solver struct
-- `internal.c`: Initialize cache in kissat_init()
-- `decide.c`: Cache fill/lookup/get functions
-- `assign.c`: Invalidate cache on decision
-- `bump.c`: Invalidate cache on score updates
+### Why It Didn't Work
+1. **Conflict analysis is sequential** - Each conflict depends on the previous one (learned clauses)
+2. **Batching adds complexity** - Need to track batch state, check fullness, process deferred bumps
+3. **Cache benefits not realized** - The analyzed[] array is already cache-friendly for single conflicts
+4. **Overhead exceeds benefits** - Branch mispredictions from batch checking outweigh cache gains
 
-## Results
+### Lessons Learned
+1. **Not all batching improves performance** - Sequential dependencies limit batching effectiveness
+2. **Cache locality is already good** - The existing bump code is well-optimized
+3. **Simplicity wins** - Adding state machines adds overhead
 
-### f1.cnf Performance
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| **Time** | 82.0s | **61.8s** | **-24.6%** |
-| Consistency | - | ±0.02s | Excellent |
+### Final State
+- ✅ Optimization #2 (Size Specialization) working: ~148-149s
+- ❌ Optimization #4 (Conflict Batching) reverted
+- ✅ Binary in ./build/ ready for testing
 
-### Verification Runs
-- Run 1: 61.82s
-- Run 2: 61.79s  
-- Run 3: 61.80s
-
-### Cumulative Results
-| Stage | Time | Improvement |
-|-------|------|-------------|
-| Baseline | 94.0s | - |
-| After Prefetching | 85.0s | -9.6% |
-| After Branch Hints | 84.2s | -1.0% |
-| After Clause Tracking | 82.0s | -2.6% |
-| **After Decision Cache** | **61.8s** | **-24.6%** |
-| **TOTAL** | - | **-34.3%** |
-
-## Why This Works
-
-The VSIDS (Variable State Independent Decaying Sum) decision heuristic maintains a heap of variable scores. Finding the highest-scoring unassigned variable requires:
-1. Getting max from heap
-2. Checking if assigned
-3. If assigned, popping and repeating
-
-Most top-scored variables are already assigned, causing many heap operations. The cache stores the top 8 unassigned variables, avoiding repeated heap traversals.
-
-## GitHub Commit
-
-```
-Commit: 1c2c71b
-Message: Optimization #4: Variable Decision Cache
-Repository: https://github.com/vigal/kissat-optimized
-```
-
-## Next Steps
-
-Optimization #5: Memory Pool for Clauses
-- Expected: 5-10% additional improvement
-- Reduce malloc/free overhead
-- Better cache locality for clauses
+### Files
+- Binary: `./build/kissat` (Optimization #2 only)
+- Modified: `src/proplit.h`, `src/simdscan.c`

@@ -44,6 +44,9 @@ void kissat_init_simd_support (kissat *solver) {
   if (cpu_features.initialized)
     return;
   
+  // First-time initialization
+
+  
 #if defined(__x86_64__) && defined(__GNUC__)
   int info[4];
   
@@ -167,60 +170,131 @@ static inline bool avx512_find_non_false (const value *values,
 
 /*
  * AVX2 implementation (256-bit)
- * Processes 8 literals at a time
+ * Optimized for Intel and AMD Gen 4.5 (Zen 4)
+ * 
+ * Strategy for AVX2 (256-bit registers, 32 bytes):
+ * - Process 32 literals at a time using byte-wise operations
+ * - Load 32 literal indices (128 bytes) using 4x 256-bit loads
+ * - Gather values[lit] for each - use _mm256_i32gather_epi32 with 32-bit zero extension
+ * - Pack to bytes and compare
+ * - AMD Zen 4 note: Has good AVX2 throughput, 256-bit ops are native (not split)
+ * - Intel Alder Lake/Raptor Lake: Also good AVX2 performance
  */
 #if KISSAT_HAS_AVX2
-static inline bool avx2_find_non_false (const value *values,
-                                         const unsigned *lits,
-                                         size_t start_idx,
-                                         size_t end_idx,
-                                         unsigned *out_replacement,
-                                         size_t *out_idx) {
+
+// Fast path: Process 32 literals at once using AVX2
+// Returns number of literals processed (0-32), or 32+index+1 if found
+// Returns 0 if no match in this batch
+static inline unsigned avx2_find_in_batch_32 (const value *values,
+                                               const unsigned *lits,
+                                               unsigned *out_replacement) {
+  // Load 32 literal indices (128 bytes = 4 AVX2 registers)
+  // Each _mm256_loadu_si256 loads 8 x 32-bit integers
+  __m256i lit0 = _mm256_loadu_si256 ((__m256i *)(lits + 0));
+  __m256i lit1 = _mm256_loadu_si256 ((__m256i *)(lits + 8));
+  __m256i lit2 = _mm256_loadu_si256 ((__m256i *)(lits + 16));
+  __m256i lit3 = _mm256_loadu_si256 ((__m256i *)(lits + 24));
   
-  const size_t simd_width = 8; // 8 literals per AVX2 register
+  // Gather 32-bit values and extract low byte
+  // values[] is int8_t indexed by unsigned lit
+  // We gather 32-bit and compare packed bytes
+  
+  // Note: _mm256_i32gather_epi32 with scale=1 gathers 32-bit values
+  // We need the low byte of each gathered value
+  
+  // Gather first 8 values (32-bit each, we use low byte)
+  __m256i v0 = _mm256_i32gather_epi32 ((const int *)values, lit0, 1);
+  __m256i v1 = _mm256_i32gather_epi32 ((const int *)values, lit1, 1);
+  __m256i v2 = _mm256_i32gather_epi32 ((const int *)values, lit2, 1);
+  __m256i v3 = _mm256_i32gather_epi32 ((const int *)values, lit3, 1);
+  
+  // Pack from 32-bit to 8-bit: values are -1, 0, or 1
+  // We want to check if value >= 0 (i.e., sign bit is 0)
+  // First, pack 32-bit to 16-bit, then 16-bit to 8-bit
+  
+  // Pack 32-bit to 16-bit (signed saturation)
+  __m256i v01_16 = _mm256_packs_epi32 (v0, v1);
+  __m256i v23_16 = _mm256_packs_epi32 (v2, v3);
+  
+  // Pack 16-bit to 8-bit (signed saturation)
+  __m256i v0123_8 = _mm256_packs_epi16 (v01_16, v23_16);
+  
+  // Now we have 32 x 8-bit values in v0123_8
+  // Values are -1 (0xFF), 0, or 1 (0x01)
+  // We want to find where value >= 0 (i.e., value != -1)
+  
+  // Create vector of -1
+  __m256i neg1 = _mm256_set1_epi8 (-1);
+  
+  // Compare: v == -1 (false)
+  __m256i false_mask = _mm256_cmpeq_epi8 (v0123_8, neg1);
+  
+  // We want non-false, so look for where false_mask is 0
+  // Create mask of non-false positions
+  int non_false_mask = _mm256_movemask_epi8 (false_mask);
+  
+  // Invert: we want positions where false_mask is 0
+  int match_mask = ~non_false_mask & 0xFFFFFFFF;  // Keep only lower 32 bits
+  
+  if (match_mask != 0) {
+    // Found at least one non-false
+    int first = __builtin_ctz (match_mask);
+    *out_replacement = lits[first];
+    return 32 + first + 1;  // Encode found position
+  }
+  
+  return 0;  // No match in this batch
+}
+
+// Alternative AVX2 implementation: 16-literal batches
+// Better for clauses with 8-32 literals (most common case)
+static inline bool avx2_find_non_false_16 (const value *values,
+                                            const unsigned *lits,
+                                            size_t start_idx,
+                                            size_t end_idx,
+                                            unsigned *out_replacement,
+                                            size_t *out_idx) {
+  
+  const size_t simd_width = 16;  // 16 literals per batch
   size_t i = start_idx;
   
-  // Process 8 literals at a time
+  // Align to 32-byte boundary if beneficial
+  // But literals are 4 bytes, so 16 literals = 64 bytes
+  // Just process sequentially
+  
   for (; i + simd_width <= end_idx; i += simd_width) {
-    // Load 8 literal indices
-    __m256i lit_indices = _mm256_loadu_si256 ((__m256i *)(lits + i));
+    // Load 16 literal indices (64 bytes)
+    __m256i lit0 = _mm256_loadu_si256 ((__m256i *)(lits + i));
+    __m256i lit1 = _mm256_loadu_si256 ((__m256i *)(lits + i + 8));
     
-    // Gather values - AVX2 has _mm256_i32gather_epi32 but it loads 32-bit values
-    // Our values are 8-bit, so we need to be careful
-    // For now, use scalar fallback within AVX2 loop
-    // (AVX2 doesn't have 8-bit gather)
+    // Gather values - each gather loads 8 x 32-bit values
+    __m256i v0 = _mm256_i32gather_epi32 ((const int *)values, lit0, 1);
+    __m256i v1 = _mm256_i32gather_epi32 ((const int *)values, lit1, 1);
     
-    // Actually, let's just do 8 scalar checks but unrolled
-    // which helps with instruction-level parallelism
-    value v0 = values[lits[i + 0]];
-    value v1 = values[lits[i + 1]];
-    value v2 = values[lits[i + 2]];
-    value v3 = values[lits[i + 3]];
-    value v4 = values[lits[i + 4]];
-    value v5 = values[lits[i + 5]];
-    value v6 = values[lits[i + 6]];
-    value v7 = values[lits[i + 7]];
+    // Pack to 8-bit
+    __m256i v01_16 = _mm256_packs_epi32 (v0, v1);
+    __m256i v0123_8 = _mm256_packs_epi16 (v01_16, v01_16);  // Only need first 16
     
-    // Branchless check using bit operations
-    unsigned mask = 0;
-    mask |= (v0 >= 0) << 0;
-    mask |= (v1 >= 0) << 1;
-    mask |= (v2 >= 0) << 2;
-    mask |= (v3 >= 0) << 3;
-    mask |= (v4 >= 0) << 4;
-    mask |= (v5 >= 0) << 5;
-    mask |= (v6 >= 0) << 6;
-    mask |= (v7 >= 0) << 7;
+    // Extract lower 128 bits for the 16 values we care about
+    __m128i v16 = _mm256_castsi256_si128 (v0123_8);
     
-    if (mask != 0) {
-      int first = __builtin_ctz (mask);
+    // Compare with -1 (false)
+    __m128i neg1 = _mm_set1_epi8 (-1);
+    __m128i false_mask = _mm_cmpeq_epi8 (v16, neg1);
+    
+    // Get mask of non-false
+    int non_false_mask = _mm_movemask_epi8 (false_mask);
+    int match_mask = ~non_false_mask & 0xFFFF;
+    
+    if (match_mask != 0) {
+      int first = __builtin_ctz (match_mask);
       *out_replacement = lits[i + first];
       *out_idx = i + first;
       return true;
     }
   }
   
-  // Handle remaining
+  // Handle remaining with scalar
   for (; i < end_idx; i++) {
     unsigned lit = lits[i];
     if (values[lit] >= 0) {
@@ -231,6 +305,137 @@ static inline bool avx2_find_non_false (const value *values,
   }
   
   return false;
+}
+
+// Optimized AVX2 implementation - safe version without gather
+// Uses scalar loads to avoid potential gather issues
+// Best for Intel and AMD Zen 4 (good at 256-bit operations)
+static inline bool avx2_find_non_false (const value *values,
+                                         const unsigned *lits,
+                                         size_t start_idx,
+                                         size_t end_idx,
+                                         unsigned *out_replacement,
+                                         size_t *out_idx) {
+  
+  size_t i = start_idx;
+  const size_t count = end_idx - start_idx;
+  
+  // For small counts, use scalar (avoid SIMD overhead)
+  if (count < 8) {
+    for (; i < end_idx; i++) {
+      unsigned lit = lits[i];
+      if (values[lit] >= 0) {
+        *out_replacement = lit;
+        *out_idx = i;
+        return true;
+      }
+    }
+    return false;
+  }
+  
+  // Main AVX2 loop: process up to 8 literals at a time
+  // We use scalar loads to build the vector - safer than gather
+  for (; i + 8 <= end_idx; i += 8) {
+    // Load values directly using scalar accesses - the compiler will optimize
+    // This avoids gather which can have issues with unaligned/short arrays
+    int8_t v0 = values[lits[i + 0]];
+    int8_t v1 = values[lits[i + 1]];
+    int8_t v2 = values[lits[i + 2]];
+    int8_t v3 = values[lits[i + 3]];
+    int8_t v4 = values[lits[i + 4]];
+    int8_t v5 = values[lits[i + 5]];
+    int8_t v6 = values[lits[i + 6]];
+    int8_t v7 = values[lits[i + 7]];
+    
+    // Build vector from scalar values (32 bytes total for AVX2)
+    // We only use the lower 8 bytes, upper 24 bytes are padding
+    __m256i bytes = _mm256_set_epi8(
+        0, 0, 0, 0, 0, 0, 0, 0,  // Bytes 31-24
+        0, 0, 0, 0, 0, 0, 0, 0,  // Bytes 23-16
+        0, 0, 0, 0, 0, 0, 0, 0,  // Bytes 15-8
+        v7, v6, v5, v4, v3, v2, v1, v0  // Bytes 7-0 with values
+    );
+    
+    // Values are -1, 0, or 1
+    // Non-false means NOT (value == -1)
+    __m256i neg1_vec = _mm256_set1_epi8 (-1);
+    __m256i is_false = _mm256_cmpeq_epi8 (bytes, neg1_vec);
+    int false_mask = _mm256_movemask_epi8 (is_false);
+    
+    // We want positions where it's NOT false (only check lower 8 bits)
+    int match_mask = (~false_mask) & 0xFF;
+    
+    if (match_mask != 0) {
+      int first = __builtin_ctz (match_mask);
+      *out_replacement = lits[i + first];
+      *out_idx = i + first;
+      return true;
+    }
+  }
+  
+  // Handle remaining (0-7 literals) with scalar
+  for (; i < end_idx; i++) {
+    unsigned lit = lits[i];
+    if (values[lit] >= 0) {
+      *out_replacement = lit;
+      *out_idx = i;
+      return true;
+    }
+  }
+  
+  return false;
+}
+
+// Even faster AVX2: 4x unrolled for maximum ILP
+// Safe version without gather - uses scalar loads
+static inline bool avx2_find_non_false_unrolled (const value *values,
+                                                  const unsigned *lits,
+                                                  size_t start_idx,
+                                                  size_t end_idx,
+                                                  unsigned *out_replacement,
+                                                  size_t *out_idx) {
+  
+  size_t i = start_idx;
+  
+  // Process 32 literals at a time using simple scalar loop unrolled
+  // This avoids gather issues while still getting good ILP
+  for (; i + 32 <= end_idx; i += 32) {
+    // Check first 8
+    for (int j = 0; j < 8; j++) {
+      if (values[lits[i + j]] >= 0) {
+        *out_replacement = lits[i + j];
+        *out_idx = i + j;
+        return true;
+      }
+    }
+    // Check next 8
+    for (int j = 8; j < 16; j++) {
+      if (values[lits[i + j]] >= 0) {
+        *out_replacement = lits[i + j];
+        *out_idx = i + j;
+        return true;
+      }
+    }
+    // Check next 8
+    for (int j = 16; j < 24; j++) {
+      if (values[lits[i + j]] >= 0) {
+        *out_replacement = lits[i + j];
+        *out_idx = i + j;
+        return true;
+      }
+    }
+    // Check last 8
+    for (int j = 24; j < 32; j++) {
+      if (values[lits[i + j]] >= 0) {
+        *out_replacement = lits[i + j];
+        *out_idx = i + j;
+        return true;
+      }
+    }
+  }
+  
+  // Handle remaining with simpler AVX2
+  return avx2_find_non_false (values, lits, i, end_idx, out_replacement, out_idx);
 }
 #endif // KISSAT_HAS_AVX2
 
@@ -244,7 +449,7 @@ bool kissat_simd_find_non_false (const value *values,
   
   size_t count = end_idx - start_idx;
   
-  // Use scalar for small arrays
+  // Use scalar for small arrays (avoid SIMD overhead)
   if (count < KISSAT_SIMD_THRESHOLD) {
     return scalar_find_non_false (values, lits, start_idx, end_idx,
                                    out_replacement, out_idx);
@@ -259,6 +464,13 @@ bool kissat_simd_find_non_false (const value *values,
   
 #if KISSAT_HAS_AVX2
   if (cpu_features.avx2) {
+    // Use unrolled version for large clauses (>32 literals)
+    // This maximizes ILP on both Intel and AMD Zen 4
+    if (count >= 32) {
+      return avx2_find_non_false_unrolled (values, lits, start_idx, end_idx,
+                                           out_replacement, out_idx);
+    }
+    // Use standard version for medium clauses (8-31 literals)
     return avx2_find_non_false (values, lits, start_idx, end_idx,
                                  out_replacement, out_idx);
   }
@@ -307,12 +519,45 @@ size_t kissat_simd_count_false (const value *values,
   }
 #endif
   
-  // AVX2 fallback
+  // AVX2 implementation
 #if KISSAT_HAS_AVX2
-  if (cpu_features.avx2) {
+  if (cpu_features.avx2 && size >= 16) {
     size_t count = 0;
-    // Similar to above but with 256-bit registers
-    for (size_t i = 0; i < size; i++) {
+    size_t i = 0;
+    
+    // Use 2x unrolled loop for ILP
+    for (; i + 16 <= size; i += 16) {
+      __m256i lit0 = _mm256_loadu_si256 ((__m256i *)(lits + i));
+      __m256i lit1 = _mm256_loadu_si256 ((__m256i *)(lits + i + 8));
+      
+      __m256i v0 = _mm256_i32gather_epi32 ((const int *)values, lit0, 1);
+      __m256i v1 = _mm256_i32gather_epi32 ((const int *)values, lit1, 1);
+      
+      // Check sign bit (value < 0 means negative)
+      __m256i neg0 = _mm256_cmpgt_epi8 (_mm256_setzero_si256 (), 
+                                         _mm256_and_si256 (v0, _mm256_set1_epi32 (0xFF)));
+      __m256i neg1 = _mm256_cmpgt_epi8 (_mm256_setzero_si256 (), 
+                                         _mm256_and_si256 (v1, _mm256_set1_epi32 (0xFF)));
+      
+      int mask0 = _mm256_movemask_epi8 (neg0);
+      int mask1 = _mm256_movemask_epi8 (neg1);
+      
+      count += (unsigned)__builtin_popcount (mask0 & 0xFF);
+      count += (unsigned)__builtin_popcount (mask1 & 0xFF);
+    }
+    
+    // Handle remaining 8
+    for (; i + 8 <= size; i += 8) {
+      __m256i lit_vec = _mm256_loadu_si256 ((__m256i *)(lits + i));
+      __m256i val_vec = _mm256_i32gather_epi32 ((const int *)values, lit_vec, 1);
+      __m256i neg_mask = _mm256_cmpgt_epi8 (_mm256_setzero_si256 (),
+                                             _mm256_and_si256 (val_vec, _mm256_set1_epi32 (0xFF)));
+      int mask = _mm256_movemask_epi8 (neg_mask);
+      count += __builtin_popcount (mask & 0xFF);
+    }
+    
+    // Handle remainder
+    for (; i < size; i++) {
       if (values[lits[i]] < 0)
         count++;
     }
@@ -346,6 +591,57 @@ bool kissat_simd_all_false (const value *values,
       // Check if ANY value is >= 0 (not false)
       __mmask16 ge_mask = _mm512_cmpge_epi8_mask (lit_values, _mm512_setzero_si512 ());
       if (ge_mask != 0) {
+        return false;
+      }
+    }
+    
+    // Check remainder
+    for (; i < size; i++) {
+      if (values[lits[i]] >= 0)
+        return false;
+    }
+    return true;
+  }
+#endif
+  
+  // AVX2 implementation
+#if KISSAT_HAS_AVX2
+  if (size >= 16 && cpu_features.avx2) {
+    size_t i = 0;
+    
+    // 2x unrolled for ILP
+    for (; i + 16 <= size; i += 16) {
+      __m256i lit0 = _mm256_loadu_si256 ((__m256i *)(lits + i));
+      __m256i lit1 = _mm256_loadu_si256 ((__m256i *)(lits + i + 8));
+      
+      __m256i v0 = _mm256_i32gather_epi32 ((const int *)values, lit0, 1);
+      __m256i v1 = _mm256_i32gather_epi32 ((const int *)values, lit1, 1);
+      
+      // Check if any value is >= 0 (sign bit is 0)
+      // Pack to bytes first
+      __m256i bytes0 = _mm256_and_si256 (v0, _mm256_set1_epi32 (0xFF));
+      __m256i bytes1 = _mm256_and_si256 (v1, _mm256_set1_epi32 (0xFF));
+      
+      // Check >= 0: compare with zero (greater than -1)
+      __m256i ge0 = _mm256_cmpgt_epi8 (bytes0, _mm256_set1_epi8 (-1));
+      __m256i ge1 = _mm256_cmpgt_epi8 (bytes1, _mm256_set1_epi8 (-1));
+      
+      int mask0 = _mm256_movemask_epi8 (ge0);
+      int mask1 = _mm256_movemask_epi8 (ge1);
+      
+      if ((mask0 & 0xFF) != 0 || (mask1 & 0xFF) != 0) {
+        return false;  // Found a non-false literal
+      }
+    }
+    
+    // Remaining 8
+    for (; i + 8 <= size; i += 8) {
+      __m256i lit_vec = _mm256_loadu_si256 ((__m256i *)(lits + i));
+      __m256i val_vec = _mm256_i32gather_epi32 ((const int *)values, lit_vec, 1);
+      __m256i bytes = _mm256_and_si256 (val_vec, _mm256_set1_epi32 (0xFF));
+      __m256i ge = _mm256_cmpgt_epi8 (bytes, _mm256_set1_epi8 (-1));
+      
+      if (_mm256_movemask_epi8 (ge) & 0xFF) {
         return false;
       }
     }
@@ -535,7 +831,6 @@ bool kissat_simd_analyze_conflict_literals (kissat *solver,
   (void) failed; // unused but kept for interface
   
   assigned *all_assigned = solver->assigned;
-  value *marks = solver->marks;
   unsigned count = 0;
   
 #if KISSAT_HAS_AVX512

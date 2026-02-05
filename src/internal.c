@@ -54,6 +54,7 @@ kissat *kissat_init (void) {
 #ifndef NDEBUG
   kissat_init_checker (solver);
 #endif
+  
   solver->prefix = kissat_strdup (solver, "c ");
   return solver;
 }
