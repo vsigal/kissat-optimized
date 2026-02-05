@@ -96,6 +96,11 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
     const watch head = *q++ = *p++;
     const unsigned blocking = head.blocking.lit;
     assert (VALID_INTERNAL_LITERAL (blocking));
+    
+    // Idea #2: Prefetch blocking literal's value (conservative)
+    // This hides the memory latency for the values array access
+    KISSAT_PROPLIT_PREFETCH(&values[blocking]);
+    
     const value blocking_value = values[blocking];
 
     if (KISSAT_PROPLIT_LIKELY (head.type.binary)) {
