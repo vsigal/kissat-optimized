@@ -243,7 +243,7 @@ struct kissat {
 
   // Variable Decision Cache (Optimization #4)
   // Cache top-N decision candidates to avoid expensive heap traversals
-#define DECISION_CACHE_SIZE 16  // Increased from 8 for better hit rate
+#define DECISION_CACHE_SIZE 64  // Optimal: 64 entries gives best performance
   unsigned decision_cache[DECISION_CACHE_SIZE];  // Cached variable indices
   unsigned decision_cache_size;                   // Current cache entries
   unsigned decision_cache_hits;                   // Statistics
