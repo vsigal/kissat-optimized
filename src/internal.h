@@ -33,6 +33,10 @@
 #include "vector.h"
 #include "watch.h"
 
+// Forward declaration for binary implication index
+struct bin_impl_list;
+typedef struct bin_impl_list bin_impl_list;
+
 typedef struct datarank datarank;
 
 struct datarank {
@@ -249,6 +253,10 @@ struct kissat {
   unsigned decision_cache_hits;                   // Statistics
   unsigned decision_cache_misses;                 // Statistics
   bool decision_cache_valid;                      // Cache validity flag
+
+  // Binary Implication Index (Optimization #6)
+  // Flat array storage for O(1) access to binary clause implications
+  bin_impl_list *bin_index;
 
   statistics statistics;
 };

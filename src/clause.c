@@ -1,4 +1,5 @@
 #include "allocate.h"
+#include "binindex.h"
 #include "collect.h"
 #include "inline.h"
 
@@ -74,6 +75,12 @@ static reference new_binary_clause (kissat *solver, bool original,
   if (!original) {
     CHECK_AND_ADD_BINARY (first, second);
     ADD_BINARY_TO_PROOF (first, second);
+    // Update binary implication index (a => b means if a is true, b must be true)
+    // Binary clause (a, b) means (!a => b) and (!b => a)
+    if (solver->bin_index) {
+      kissat_bin_impl_add (solver, NOT (first), second);
+      kissat_bin_impl_add (solver, NOT (second), first);
+    }
   }
   return INVALID_REF;
 }
@@ -184,4 +191,9 @@ void kissat_delete_binary (kissat *solver, unsigned a, unsigned b) {
   DELETE_BINARY_FROM_PROOF (a, b);
   dec_clause (solver, false, true);
   INC (clauses_deleted);
+  // Update binary implication index
+  if (solver->bin_index) {
+    kissat_bin_impl_remove (solver, NOT (a), b);
+    kissat_bin_impl_remove (solver, NOT (b), a);
+  }
 }

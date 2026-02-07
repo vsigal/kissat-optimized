@@ -1,5 +1,6 @@
 #include "search.h"
 #include "analyze.h"
+#include "binindex.h"
 #include "bump.h"
 #include "classify.h"
 #include "decide.h"
@@ -56,6 +57,10 @@ static void start_search (kissat *solver) {
   kissat_init_averages (solver, &AVERAGES);
 
   kissat_classify (solver);
+
+  // Build binary implication index before search
+  // DISABLED: Currently has correctness issues
+  // kissat_rebuild_bin_index (solver);
 
   if (solver->stable) {
     kissat_init_reluctant (solver);

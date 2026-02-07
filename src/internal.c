@@ -1,5 +1,6 @@
 #include "allocate.h"
 #include "backtrack.h"
+#include "binindex.h"
 #include "error.h"
 #include "import.h"
 #include "inline.h"
@@ -50,6 +51,9 @@ kissat *kissat_init (void) {
   solver->decision_cache_valid = false;
   for (unsigned i = 0; i < DECISION_CACHE_SIZE; i++)
     solver->decision_cache[i] = INVALID_IDX;
+  
+  // Initialize binary implication index (will be built before search)
+  solver->bin_index = NULL;
   
 #ifndef NDEBUG
   kissat_init_checker (solver);
@@ -145,6 +149,9 @@ void kissat_release (kissat *solver) {
   RELEASE_STACK (solver->gates[0]);
   RELEASE_STACK (solver->gates[1]);
   RELEASE_STACK (solver->resolvents);
+
+  // Release binary implication index
+  kissat_release_bin_index (solver);
 
 #if !defined(NDEBUG) || !defined(NPROOFS)
   RELEASE_STACK (solver->added);

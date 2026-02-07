@@ -1,4 +1,5 @@
 #include "simdscan.h"
+#include "binindex.h"
 
 static inline void kissat_watch_large_delayed (kissat *solver,
                                                watches *all_watches,
@@ -95,6 +96,26 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
   #define WATCH_PREFETCH_DISTANCE 12
   #define CLAUSE_PREFETCH_DISTANCE 4
   
+  // Process binary clauses via binary implication index (if available)
+  // DISABLED: Currently has correctness issues
+  /*
+  if (solver->bin_index) {
+    clause *binary_res = kissat_propagate_binary_index (
+        solver, not_lit, values, assigned, probing, level, &ticks);
+    if (binary_res) {
+      res = binary_res;
+#ifndef CONTINUE_PROPAGATING_AFTER_CONFLICT
+      while (p != end_watches)
+        *q++ = *p++;
+      SET_END_OF_WATCHES (*watches, q);
+      kissat_watch_large_delayed (solver, all_watches, delayed);
+      solver->ticks += ticks;
+      return res;
+#endif
+    }
+  }
+  */
+
   // Pre-fetch first batch of watches
   if (begin_watches + WATCH_PREFETCH_DISTANCE < end_watches)
     KISSAT_PROPLIT_PREFETCH(begin_watches + WATCH_PREFETCH_DISTANCE);
@@ -116,6 +137,7 @@ static inline clause *PROPAGATE_LITERAL (kissat *solver,
 
     if (KISSAT_PROPLIT_LIKELY (head.type.binary)) {
       // Binary clause fast path - most common case
+      // Note: Binary index integration disabled due to correctness issues
       if (KISSAT_PROPLIT_LIKELY (blocking_value > 0))
         continue;
       if (KISSAT_PROPLIT_UNLIKELY (blocking_value < 0)) {
