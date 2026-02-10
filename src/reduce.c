@@ -178,7 +178,8 @@ static uint64_t adaptive_reduce_delta (kissat *solver) {
     
     if (prev_duration > 0.0 && conflicts_between > 100) {
       double search_time = solver->last.reduce_timing.start_time - solver->last.reduce_timing.end_time;
-      if (search_time < 0.001) search_time = 0.001;
+      // Handle clock precision issues - ensure positive minimum
+      if (search_time <= 0.0 || search_time < 0.001) search_time = 0.001;
       
       double overhead = prev_duration / (search_time + prev_duration);
       
