@@ -107,12 +107,12 @@
   OPTION (randeclength, 10, 1, INT_MAX, "random conflicts length") \
   OPTION (randecstable, 0, 0, 1, "random decisions in stable mode") \
   OPTION (reduce, 1, 0, 1, "learned clause reduction") \
+  OPTION (reduceadaptive, 1, 0, 1, "adaptive reduce intervals based on efficiency") \
+  OPTION (reducefactor, 100, 50, 200, "adaptive reduce scaling factor (%)") \
   OPTION (reducehigh, 900, 0, 1000, "high reduce fraction per mille") \
   OPTION (reduceinit, 1e3, 2, 1e5, "initial reduce interval") \
   OPTION (reduceint, 1e3, 2, 1e5, "base reduce interval") \
   OPTION (reducelow, 500, 0, 1000, "low reduce fraction per mille") \
-  OPTION (reduceadaptive, 1, 0, 1, "adaptive reduce intervals based on efficiency") \
-  OPTION (reducefactor, 100, 50, 200, "adaptive reduce scaling factor (%)") \
   OPTION (reluctant, 1, 0, 1, "stable reluctant doubling restarting") \
   OPTION (reluctantint, 1 << 10, 2, 1 << 15, "reluctant interval") \
   OPTION (reluctantlim, 1 << 20, 0, 1 << 30, "reluctant limit (0=unlimited)") \
