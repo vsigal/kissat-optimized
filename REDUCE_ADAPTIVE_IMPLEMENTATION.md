@@ -50,12 +50,14 @@ Where:
 
 | Overhead | Target Scale | Action |
 |----------|--------------|--------|
-| > 20% | 1.30 | Reduce too slow → wait 30% longer |
-| > 15% | 1.15 | Slightly slow → wait 15% longer |
-| > 10% | 1.05 | Moderate overhead |
-| < 3% | 0.90 | Very fast → reduce 10% more often |
-| < 5% | 0.95 | Slightly fast |
+| > 25% | 1.15 | Reduce slow → wait 15% longer |
+| > 18% | 1.08 | Slightly high overhead |
+| > 12% | 1.03 | Moderate overhead |
+| < 2% | 0.95 | Very fast reduce |
+| < 4% | 0.98 | Slightly fast |
 | otherwise | 1.00 | No change |
+
+**Note**: These conservative values were tuned after discovering that aggressive scaling (originally up to 1.30) caused 2× slowdown on hard instances like o19.cnf.
 
 #### 3. Apply User Factor
 
@@ -64,24 +66,28 @@ target_scale = 1.0 + (target_scale - 1.0) × (reducefactor / 100)
 ```
 
 Example with `reducefactor=50`:
-- Target 1.30 becomes: 1.0 + (0.30 × 0.5) = 1.15
-- Target 0.90 becomes: 1.0 + (-0.10 × 0.5) = 0.95
+- Target 1.15 becomes: 1.0 + (0.15 × 0.5) = 1.075
+- Target 0.95 becomes: 1.0 + (-0.05 × 0.5) = 0.975
 
 #### 4. Smooth Transition (EMA)
 
 ```
-new_scale = current_scale × 0.75 + target_scale × 0.25
+new_scale = current_scale × 0.85 + target_scale × 0.15
 ```
 
-This ensures gradual changes (exponential moving average with 25% weight on new target).
+This ensures gradual changes (exponential moving average with 15% weight on new target).
+
+More smoothing (was 75/25) prevents rapid swings in scale for hard instances.
 
 #### 5. Clamp Bounds
 
 ```
-scale = clamp(new_scale, 0.5, 3.0)
+scale = clamp(new_scale, 0.7, 1.5)
 ```
 
-Minimum 0.5× base interval, maximum 3× base interval.
+Minimum 0.7× base interval, maximum 1.5× base interval.
+
+**Important**: The original max of 3.0 caused major slowdowns on hard instances (o19 went from 30min to 59min). Now capped at 1.5× for better balance.
 
 #### 6. Calculate Final Delta
 
