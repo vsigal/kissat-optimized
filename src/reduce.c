@@ -2,9 +2,11 @@
 #include "allocate.h"
 #include "collect.h"
 #include "inline.h"
+#include "kimits.h"
 #include "print.h"
 #include "rank.h"
 #include "report.h"
+#include "resources.h"
 #include "tiers.h"
 #include "trail.h"
 
@@ -150,7 +152,90 @@ static void mark_less_useful_clauses_as_garbage (kissat *solver,
   ADD (clauses_reduced, reduced);
 }
 
+/*
+ * Calculate adaptive reduce interval based on search efficiency.
+ * 
+ * Strategy:
+ * 1. If reduce takes too much time (>15% of total), increase interval
+ * 2. If arena has lots of garbage (>25%), decrease interval  
+ * 3. If arena is clean (<10%), can wait longer
+ * 4. Smooth transitions using exponential moving average
+ */
+static uint64_t adaptive_reduce_delta (kissat *solver) {
+  uint64_t base_delta = GET_OPTION (reduceint);
+  double scale = 1.0;
+  
+  if (!GET_OPTION (reduceadaptive)) {
+    // Standard Kissat behavior: use fixed scale (1.0)
+    scale = solver->last.reduce_timing.current_scale;
+  } else {
+    // Adaptive mode: calculate dynamic scale based on overhead
+    double prev_duration = solver->last.reduce_timing.duration;
+    uint64_t prev_start_conflicts = solver->last.reduce_timing.prev_start_conflicts;
+    double current_scale = solver->last.reduce_timing.current_scale;
+    
+    uint64_t conflicts_between = CONFLICTS - prev_start_conflicts;
+    
+    if (prev_duration > 0.0 && conflicts_between > 100) {
+      double search_time = solver->last.reduce_timing.start_time - solver->last.reduce_timing.end_time;
+      if (search_time < 0.001) search_time = 0.001;
+      
+      double overhead = prev_duration / (search_time + prev_duration);
+      
+      double target_scale = 1.0;
+      
+      if (overhead > 0.20) {
+        target_scale = 1.3;
+      } else if (overhead > 0.15) {
+        target_scale = 1.15;
+      } else if (overhead > 0.10) {
+        target_scale = 1.05;
+      } else if (overhead < 0.03) {
+        target_scale = 0.9;
+      } else if (overhead < 0.05) {
+        target_scale = 0.95;
+      }
+      
+      double factor = GET_OPTION (reducefactor) / 100.0;
+      target_scale = 1.0 + (target_scale - 1.0) * factor;
+      
+      double new_scale = current_scale * 0.75 + target_scale * 0.25;
+      
+      if (new_scale < 0.5) new_scale = 0.5;
+      if (new_scale > 3.0) new_scale = 3.0;
+      
+      solver->last.reduce_timing.current_scale = new_scale;
+      
+#ifndef QUIET
+      kissat_phase (solver, "reduce", GET (reductions),
+                    "adaptive: scale=%.2f overhead=%.1f%% -> next_int=%.0f",
+                    new_scale, overhead * 100, base_delta * new_scale);
+#endif
+    }
+    
+    scale = solver->last.reduce_timing.current_scale;
+  }
+  
+  // Calculate final delta with scaling
+  uint64_t delta = (uint64_t)(base_delta * scale);
+  
+  // Apply sqrt scaling based on number of reductions (standard Kissat behavior)
+  uint64_t reductions = solver->statistics.reductions;
+  if (reductions > 0) {
+    delta = (uint64_t)(delta * kissat_sqrt(reductions));
+  }
+  
+  if (delta < 100) delta = 100;
+  
+  return delta;
+}
+
 int kissat_reduce (kissat *solver) {
+  // Record start time for this reduction
+  solver->last.reduce_timing.prev_start_conflicts = solver->last.reduce_timing.start_conflicts;
+  solver->last.reduce_timing.start_conflicts = CONFLICTS;
+  solver->last.reduce_timing.start_time = kissat_process_time ();
+  
   START (reduce);
   INC (reductions);
   kissat_phase (solver, "reduce", GET (reductions),
@@ -190,7 +275,23 @@ int kissat_reduce (kissat *solver) {
   } else
     kissat_phase (solver, "reduce", GET (reductions), "nothing to reduce");
   kissat_classify (solver);
-  UPDATE_CONFLICT_LIMIT (reduce, reductions, SQRT, false);
+  
+  // Calculate duration of this reduction
+  double end_time = kissat_process_time ();
+  solver->last.reduce_timing.end_time = end_time;
+  solver->last.reduce_timing.duration = end_time - solver->last.reduce_timing.start_time;
+  
+  // Use adaptive reduce interval calculation
+  uint64_t delta = adaptive_reduce_delta (solver);
+  uint64_t new_limit = CONFLICTS + delta;
+  solver->limits.reduce.conflicts = new_limit;
+  
+#ifndef QUIET
+  kissat_phase (solver, "reduce", GET (reductions),
+                "next reduce limit at %" PRIu64 " after %" PRIu64 " conflicts",
+                new_limit, delta);
+#endif
+  
   solver->last.conflicts.reduce = CONFLICTS;
   REPORT (0, '-');
   STOP (reduce);

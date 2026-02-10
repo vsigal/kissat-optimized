@@ -100,6 +100,14 @@ void kissat_init_limits (kissat *solver) {
   assert (solver->statistics.searches == 1);
 
   init_enabled (solver);
+  
+  // Initialize adaptive reduce timing tracking
+  solver->last.reduce_timing.start_conflicts = 0;
+  solver->last.reduce_timing.prev_start_conflicts = 0;
+  solver->last.reduce_timing.start_time = 0.0;
+  solver->last.reduce_timing.end_time = 0.0;
+  solver->last.reduce_timing.duration = 0.0;
+  solver->last.reduce_timing.current_scale = 1.0;
 
   limits *limits = &solver->limits;
 

@@ -85,6 +85,14 @@ struct remember {
   struct {
     uint64_t reduce;
   } conflicts;
+  struct {
+    uint64_t start_conflicts;       // conflicts when current reduce started
+    uint64_t prev_start_conflicts;  // conflicts when previous reduce started
+    double start_time;              // process time when reduce started
+    double end_time;                // process time when reduce ended
+    double duration;                // last reduce duration in seconds
+    double current_scale;           // adaptive scaling factor (1.0 = base)
+  } reduce_timing;
 };
 
 struct kissat;

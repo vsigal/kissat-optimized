@@ -34,7 +34,8 @@
   REP ("binary", "3" PRIu64, BINARY_CLAUSES) \
   REP ("irredundant", "2" PRIu64, IRREDUNDANT_CLAUSES) \
   REP ("variables", "2u", solver->active) \
-  REP ("remaining", "1.0f%%", REMAINING_VARIABLES)
+  REP ("remaining", "1.0f%%", REMAINING_VARIABLES) \
+  REP ("redscale", ".2f", solver->last.reduce_timing.current_scale)
 
 void kissat_report (kissat *solver, bool verbose, char type) {
   statistics *statistics = &solver->statistics;
