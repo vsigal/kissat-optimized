@@ -187,9 +187,16 @@ Where `adaptive_scale` starts at 1.0 and adjusts based on measured overhead.
 ./kissat problem.cnf
 ```
 
-### Disable Adaptive
+### Disable Adaptive (Use Fixed Intervals)
 ```bash
+# Use default reduceint=1000
 ./kissat --reduceadaptive=false problem.cnf
+
+# Use custom interval (e.g., 2000)
+./kissat --reduceint=2000 --reduceadaptive=false problem.cnf
+
+# Control both initial and base intervals
+./kissat --reduceinit=2000 --reduceint=2000 --reduceadaptive=false problem.cnf
 ```
 
 ### Adjust Adaptation Aggressiveness
