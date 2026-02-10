@@ -185,25 +185,30 @@ static uint64_t adaptive_reduce_delta (kissat *solver) {
       
       double target_scale = 1.0;
       
-      if (overhead > 0.20) {
-        target_scale = 1.3;
-      } else if (overhead > 0.15) {
-        target_scale = 1.15;
-      } else if (overhead > 0.10) {
-        target_scale = 1.05;
-      } else if (overhead < 0.03) {
-        target_scale = 0.9;
-      } else if (overhead < 0.05) {
-        target_scale = 0.95;
+      // More conservative scaling for hard instances
+      // High overhead on hard instances doesn't mean we should wait longer
+      // Instead, we need to find a balance
+      if (overhead > 0.25) {
+        target_scale = 1.15;  // Was 1.30 - too aggressive
+      } else if (overhead > 0.18) {
+        target_scale = 1.08;  // Was 1.15
+      } else if (overhead > 0.12) {
+        target_scale = 1.03;  // Was 1.05
+      } else if (overhead < 0.02) {
+        target_scale = 0.95;  // Was 0.90 - don't reduce as much
+      } else if (overhead < 0.04) {
+        target_scale = 0.98;  // Was 0.95
       }
       
       double factor = GET_OPTION (reducefactor) / 100.0;
       target_scale = 1.0 + (target_scale - 1.0) * factor;
       
-      double new_scale = current_scale * 0.75 + target_scale * 0.25;
+      // More smoothing for stability (was 75/25, now 85/15)
+      double new_scale = current_scale * 0.85 + target_scale * 0.15;
       
-      if (new_scale < 0.5) new_scale = 0.5;
-      if (new_scale > 3.0) new_scale = 3.0;
+      // Tighter bounds - don't let scale drift too far from 1.0
+      if (new_scale < 0.7) new_scale = 0.7;   // Was 0.5
+      if (new_scale > 1.5) new_scale = 1.5;   // Was 3.0 - major issue for hard instances
       
       solver->last.reduce_timing.current_scale = new_scale;
       
