@@ -97,12 +97,22 @@ if [ $DEBUG -eq 1 ]; then
 else
     echo -e "${GREEN}Optimized build with:${NC}"
     echo "  - LTO (Link-Time Optimization)"
-    echo "  - AVX2 SIMD acceleration"
+    
+    # Detect CPU features for optimal SIMD selection
+    if grep -q "avx512f" /proc/cpuinfo 2>/dev/null && grep -q "avx512bw" /proc/cpuinfo 2>/dev/null; then
+        echo "  - AVX-512 SIMD acceleration (512-bit vectors)"
+        # Enable AVX-512 for modern Intel (Skylake-X, Ice Lake, Sapphire Rapids)
+        # and AMD (Zen 4) CPUs
+        CFLAGS="-O3 -mavx512f -mavx512bw -mavx512vl -march=native -flto -DNDEBUG"
+    else
+        echo "  - AVX2 SIMD acceleration (256-bit vectors)"
+        # Fall back to AVX2 for older CPUs
+        CFLAGS="-O3 -mavx2 -march=native -flto -DNDEBUG"
+    fi
+    
     echo "  - Native CPU tuning"
     echo "  - Aggressive optimizations (-O3)"
     echo ""
-    # Production build flags
-    CFLAGS="-O3 -mavx2 -march=native -flto -DNDEBUG"
     CONFIGURE_OPTS=""
 fi
 
@@ -133,7 +143,9 @@ if make -j$(nproc) 2>&1 | tee build.log; then
         ls -lh kissat | awk '{print "Size: " $5}'
         
         # Check for SIMD usage
-        if nm kissat 2>/dev/null | grep -q "avx"; then
+        if nm kissat 2>/dev/null | grep -q "avx512"; then
+            echo "SIMD: AVX-512 detected in binary"
+        elif nm kissat 2>/dev/null | grep -q "avx"; then
             echo "SIMD: AVX2 detected in binary"
         fi
         
