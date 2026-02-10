@@ -50,14 +50,14 @@ Where:
 
 | Overhead | Target Scale | Action |
 |----------|--------------|--------|
-| > 25% | 1.15 | Reduce slow → wait 15% longer |
-| > 18% | 1.08 | Slightly high overhead |
-| > 12% | 1.03 | Moderate overhead |
-| < 2% | 0.95 | Very fast reduce |
-| < 4% | 0.98 | Slightly fast |
+| > 30% | 1.05 | Very high overhead → minimal 5% increase |
+| > 20% | 1.03 | High overhead |
+| > 15% | 1.01 | Moderate overhead |
+| < 1% | 0.98 | Very fast reduce |
+| < 3% | 0.99 | Slightly fast |
 | otherwise | 1.00 | No change |
 
-**Note**: These conservative values were tuned after discovering that aggressive scaling (originally up to 1.30) caused 2× slowdown on hard instances like o19.cnf.
+**Note**: These ultra-conservative values were tuned for hard instances. Even 15% increase (original 1.15) caused 2× slowdown on o19.cnf. Now max is 5% increase.
 
 #### 3. Apply User Factor
 
@@ -72,22 +72,25 @@ Example with `reducefactor=50`:
 #### 4. Smooth Transition (EMA)
 
 ```
-new_scale = current_scale × 0.85 + target_scale × 0.15
+new_scale = current_scale × 0.90 + target_scale × 0.10
 ```
 
-This ensures gradual changes (exponential moving average with 15% weight on new target).
+This ensures gradual changes (exponential moving average with 10% weight on new target).
 
-More smoothing (was 75/25) prevents rapid swings in scale for hard instances.
+Heavy smoothing (90/10) resists rapid changes for hard instances.
 
 #### 5. Clamp Bounds
 
 ```
-scale = clamp(new_scale, 0.7, 1.5)
+scale = clamp(new_scale, 0.90, 1.05)
 ```
 
-Minimum 0.7× base interval, maximum 1.5× base interval.
+Minimum 0.90× base interval, maximum 1.05× base interval.
 
-**Important**: The original max of 3.0 caused major slowdowns on hard instances (o19 went from 30min to 59min). Now capped at 1.5× for better balance.
+**Important**: 
+- Original max of 3.0 caused 2× slowdown on hard instances
+- Previous max of 1.15 was still too much for o18/o19
+- Now capped at 1.05× (5% max increase) for stability on hard instances
 
 #### 6. Calculate Final Delta
 
