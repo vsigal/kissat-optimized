@@ -185,32 +185,31 @@ static uint64_t adaptive_reduce_delta (kissat *solver) {
       
       double target_scale = 1.0;
       
-      // For hard instances, we should NOT increase interval even if overhead is high
-      // High overhead just means reduction is expensive, but waiting longer makes
-      // clause database bloat and slows propagation even more
-      // Only very slight adjustments based on overhead
-      if (overhead > 0.30) {
-        target_scale = 1.05;  // Minimal increase even for very high overhead
-      } else if (overhead > 0.20) {
-        target_scale = 1.03;
+      // For long-running instances, MORE aggressive scaling is BETTER
+      // Waiting longer between reductions allows more search time
+      // The overhead of reduction is amortized over more conflicts
+      if (overhead > 0.20) {
+        target_scale = 1.30;  // Significant increase for high overhead
       } else if (overhead > 0.15) {
-        target_scale = 1.01;
-      } else if (overhead < 0.01) {
-        target_scale = 0.98;
+        target_scale = 1.15;
+      } else if (overhead > 0.10) {
+        target_scale = 1.05;
       } else if (overhead < 0.03) {
-        target_scale = 0.99;
+        target_scale = 0.90;
+      } else if (overhead < 0.05) {
+        target_scale = 0.95;
       }
       
       // Apply user factor
       double factor = GET_OPTION (reducefactor) / 100.0;
       target_scale = 1.0 + (target_scale - 1.0) * factor;
       
-      // Heavy smoothing - resist changes
-      double new_scale = current_scale * 0.90 + target_scale * 0.10;
+      // Moderate smoothing
+      double new_scale = current_scale * 0.75 + target_scale * 0.25;
       
-      // Very tight bounds - stay close to 1.0 for stability on hard instances
-      if (new_scale < 0.90) new_scale = 0.90;
-      if (new_scale > 1.05) new_scale = 1.05;  // Max 5% increase - very conservative
+      // Wider bounds for long-running instances
+      if (new_scale < 0.5) new_scale = 0.5;
+      if (new_scale > 2.0) new_scale = 2.0;  // Up to 2x for very long runs
       
       solver->last.reduce_timing.current_scale = new_scale;
       
