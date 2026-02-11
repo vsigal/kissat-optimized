@@ -50,14 +50,14 @@ Where:
 
 | Overhead | Target Scale | Action |
 |----------|--------------|--------|
-| > 30% | 1.05 | Very high overhead → minimal 5% increase |
-| > 20% | 1.03 | High overhead |
-| > 15% | 1.01 | Moderate overhead |
-| < 1% | 0.98 | Very fast reduce |
-| < 3% | 0.99 | Slightly fast |
+| > 20% | 1.30 | Very high overhead → 30% longer wait |
+| > 15% | 1.15 | High overhead |
+| > 10% | 1.05 | Moderate overhead |
+| < 3% | 0.90 | Very fast reduce |
+| < 5% | 0.95 | Slightly fast |
 | otherwise | 1.00 | No change |
 
-**Note**: These ultra-conservative values were tuned for hard instances. Even 15% increase (original 1.15) caused 2× slowdown on o19.cnf. Now max is 5% increase.
+**Note**: These AGGRESSIVE values work best for **long-running instances**. For quick instances (< 1 min), use `--reduceadaptive=false`.
 
 #### 3. Apply User Factor
 
@@ -72,25 +72,25 @@ Example with `reducefactor=50`:
 #### 4. Smooth Transition (EMA)
 
 ```
-new_scale = current_scale × 0.90 + target_scale × 0.10
+new_scale = current_scale × 0.75 + target_scale × 0.25
 ```
 
-This ensures gradual changes (exponential moving average with 10% weight on new target).
+This ensures moderate smoothing (25% weight on new target).
 
-Heavy smoothing (90/10) resists rapid changes for hard instances.
+For long runs, we want scale to drift toward higher values to reduce GC frequency.
 
 #### 5. Clamp Bounds
 
 ```
-scale = clamp(new_scale, 0.90, 1.05)
+scale = clamp(new_scale, 0.5, 2.0)
 ```
 
-Minimum 0.90× base interval, maximum 1.05× base interval.
+Minimum 0.5× base interval, maximum 2.0× base interval.
 
 **Important**: 
-- Original max of 3.0 caused 2× slowdown on hard instances
-- Previous max of 1.15 was still too much for o18/o19
-- Now capped at 1.05× (5% max increase) for stability on hard instances
+- Max 2.0× allows doubling the interval for very long runs
+- This reduces GC overhead significantly on hard instances
+- For quick runs, the scale won't reach max anyway
 
 #### 6. Calculate Final Delta
 
@@ -182,12 +182,18 @@ Where `adaptive_scale` starts at 1.0 and adjusts based on measured overhead.
 
 ## Usage Examples
 
-### Default (Adaptive Enabled)
+### Quick Instances (< 1 minute) - Disable Adaptive
+```bash
+./kissat --reduceadaptive=false problem.cnf
+```
+
+### Long-Running Instances (> 5 minutes) - Use Adaptive (Default)
 ```bash
 ./kissat problem.cnf
 ```
+The aggressive scaling (up to 2×) reduces GC overhead on long runs.
 
-### Disable Adaptive (Use Fixed Intervals)
+### Custom Fixed Interval (When Adaptive Disabled)
 ```bash
 # Use default reduceint=1000
 ./kissat --reduceadaptive=false problem.cnf
@@ -204,7 +210,7 @@ Where `adaptive_scale` starts at 1.0 and adjusts based on measured overhead.
 # More conservative (50% of normal adaptation)
 ./kissat --reducefactor=50 problem.cnf
 
-# More aggressive (150% of normal adaptation)
+# More aggressive (150% of normal adaptation)  
 ./kissat --reducefactor=150 problem.cnf
 ```
 
